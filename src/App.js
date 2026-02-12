@@ -283,6 +283,8 @@ function App() {
   const [projects, setProjects] = useState([]);
   const [projectBlocks, setProjectBlocks] = useState([]);
   const [projectProperties, setProjectProperties] = useState([]);
+  const [loadedProjectIds, setLoadedProjectIds] = useState([]);
+  const [loadedBlockIds, setLoadedBlockIds] = useState([]);
   const [projectDetailProperties, setProjectDetailProperties] = useState([]);
   const [projectDetailLoading, setProjectDetailLoading] = useState(false);
   const [projectDetailError, setProjectDetailError] = useState("");
@@ -976,8 +978,6 @@ function App() {
   const [commissionTotal, setCommissionTotal] = useState(0);
   const [fullDataLoaded, setFullDataLoaded] = useState(false);
   const [loadingFullData, setLoadingFullData] = useState(false);
-  const [loadedProjectIds, setLoadedProjectIds] = useState([]);
-  const [loadedBlockIds, setLoadedBlockIds] = useState([]);
   const [activityLogs, setActivityLogs] = useState([]);
   const [selectedActivity, setSelectedActivity] = useState(null);
   const [activitySearch, setActivitySearch] = useState("");
