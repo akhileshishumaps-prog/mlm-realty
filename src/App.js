@@ -427,7 +427,8 @@ function App() {
     return items.filter(
       (item) => !item.permission || hasPermission(item.permission)
     );
-  }, [authUser]);
+  }, [hasPermission]);
+
 
   const permissionOptions = [
     { id: "dashboard:read", label: "View Dashboard" },
@@ -633,7 +634,7 @@ function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     localStorage.removeItem("mlm_token");
     setAuthUser(null);
     setPeople([]);
@@ -654,7 +655,7 @@ function App() {
     setUsersTotal(0);
     setFullDataLoaded(false);
     setActiveView("dashboard");
-  };
+  }, []);
 
   const handleCreateUser = async (event) => {
     event.preventDefault();
@@ -1795,7 +1796,7 @@ function App() {
       };
     });
     return stats;
-  }, [projects, projectProperties, propertiesForProject]);
+  }, [projects, propertiesForProject]);
   const commissionSummary = useMemo(
     () =>
       calculateCommissionSummary(
@@ -2355,49 +2356,6 @@ function App() {
 
   const formatName = (value) => (value ? value.toUpperCase() : "");
 
-  const filteredPeopleTable = useMemo(() => {
-    if (!peopleSearch) return people;
-    const term = peopleSearch.toLowerCase();
-    return people.filter((person) =>
-      person.name.toLowerCase().includes(term)
-    );
-  }, [people, peopleSearch]);
-
-  const salesBase = useMemo(() => {
-    return salesView === "cancelled"
-      ? sales.filter((sale) => sale.status === "cancelled")
-      : sales.filter((sale) => sale.status !== "cancelled");
-  }, [sales, salesView]);
-
-  const filteredSalesTable = useMemo(() => {
-    if (!salesSearch) return salesBase;
-    const term = salesSearch.toLowerCase();
-    return salesBase.filter((sale) => {
-      const sellerName = peopleIndex[sale.sellerId]?.name || "";
-      const projectName = getSaleProjectName(sale);
-      const blockName = getSaleBlockName(sale);
-      const propertyName = sale.propertyId
-        ? propertiesById[sale.propertyId]?.name || ""
-        : "";
-      return (
-        sellerName.toLowerCase().includes(term) ||
-        projectName.toLowerCase().includes(term) ||
-        blockName.toLowerCase().includes(term) ||
-        propertyName.toLowerCase().includes(term) ||
-        sale.location.toLowerCase().includes(term)
-      );
-    });
-  }, [
-    salesBase,
-    salesSearch,
-    peopleIndex,
-    projectsById,
-    blocksById,
-    propertiesById,
-    getSaleProjectName,
-    getSaleBlockName,
-  ]);
-
   const pagedPeopleTable = useMemo(
     () => peopleTableRows,
     [peopleTableRows]
@@ -2533,23 +2491,17 @@ function App() {
     );
   }, [people, profileSearch]);
 
-  const getSaleProjectName = useCallback(
-    (sale) => {
-      if (!sale) return "";
-      return sale.projectId
-        ? projectsById[sale.projectId]?.name || ""
-        : sale.propertyName || "";
-    },
-    [projectsById]
-  );
+  function getSaleProjectName(sale) {
+    if (!sale) return "";
+    return sale.projectId
+      ? projectsById[sale.projectId]?.name || ""
+      : sale.propertyName || "";
+  }
 
-  const getSaleBlockName = useCallback(
-    (sale) => {
-      if (!sale) return "";
-      return sale.blockId ? blocksById[sale.blockId]?.name || "" : "";
-    },
-    [blocksById]
-  );
+  function getSaleBlockName(sale) {
+    if (!sale) return "";
+    return sale.blockId ? blocksById[sale.blockId]?.name || "" : "";
+  }
 
   const resolveSaleLocation = (projectId, fallback = "") => {
     const project = projectsById[projectId];
