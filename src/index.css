@@ -1,0 +1,13 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap");
+
+body {
+  margin: 0;
+  background: #f7f4ef;
+  color: #0c1d2b;
+}
+
+button,
+input,
+select {
+  font-family: inherit;
+}
