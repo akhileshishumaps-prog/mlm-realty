@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS people (
   sponsor_stage INTEGER,
   phone TEXT,
   join_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  is_special INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (sponsor_id) REFERENCES people(id)
 );
 
@@ -16,6 +18,7 @@ CREATE TABLE IF NOT EXISTS investments (
   stage INTEGER NOT NULL,
   amount INTEGER NOT NULL,
   area_sq_yd INTEGER NOT NULL DEFAULT 0,
+  actual_area_sq_yd REAL,
   date TEXT NOT NULL,
   buyback_date TEXT NOT NULL,
   buyback_months INTEGER NOT NULL DEFAULT 36,
@@ -24,9 +27,19 @@ CREATE TABLE IF NOT EXISTS investments (
   block_id TEXT,
   property_id TEXT,
   status TEXT NOT NULL,
+  payment_status TEXT NOT NULL DEFAULT 'pending',
+  cancelled_at TEXT,
   paid_amount INTEGER,
   paid_date TEXT,
   FOREIGN KEY (person_id) REFERENCES people(id)
+);
+
+CREATE TABLE IF NOT EXISTS investment_payments (
+  id TEXT PRIMARY KEY,
+  investment_id TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  FOREIGN KEY (investment_id) REFERENCES investments(id)
 );
 
 CREATE TABLE IF NOT EXISTS sales (
@@ -35,6 +48,7 @@ CREATE TABLE IF NOT EXISTS sales (
   property_name TEXT NOT NULL,
   location TEXT NOT NULL,
   area_sq_yd INTEGER NOT NULL,
+  actual_area_sq_yd REAL,
   total_amount INTEGER NOT NULL,
   sale_date TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',
@@ -42,6 +56,14 @@ CREATE TABLE IF NOT EXISTS sales (
   project_id TEXT,
   block_id TEXT,
   property_id TEXT,
+  customer_id TEXT,
+  buyback_enabled INTEGER NOT NULL DEFAULT 0,
+  buyback_months INTEGER,
+  buyback_return_percent INTEGER,
+  buyback_date TEXT,
+  buyback_status TEXT NOT NULL DEFAULT 'pending',
+  buyback_paid_amount INTEGER,
+  buyback_paid_date TEXT,
   FOREIGN KEY (seller_id) REFERENCES people(id)
 );
 
@@ -84,6 +106,14 @@ CREATE TABLE IF NOT EXISTS payments (
   amount INTEGER NOT NULL,
   date TEXT NOT NULL,
   FOREIGN KEY (sale_id) REFERENCES sales(id)
+);
+
+CREATE TABLE IF NOT EXISTS customers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL UNIQUE,
+  address TEXT,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS commission_payments (

@@ -26,6 +26,9 @@ import {
   fetchDashboardSummary,
   fetchPeopleSummary,
   fetchSalesSummary,
+  fetchCustomers,
+  fetchCustomerDetail,
+  fetchInvestmentPayments,
   fetchCommissionSummary,
   fetchCommissionBalance,
   fetchPincodes,
@@ -39,8 +42,10 @@ import {
   createCommissionPayment,
   createInvestment,
   createPayment,
+  createInvestmentPayment,
   createPerson,
   createSale,
+  updateSaleBuyback,
   updateSale,
   fetchSaleDetail,
   updatePerson,
@@ -280,6 +285,7 @@ function App() {
   const [selectedPersonId, setSelectedPersonId] = useState("");
   const [people, setPeople] = useState([]);
   const [sales, setSales] = useState([]);
+  const [customers, setCustomers] = useState([]);
   const [projects, setProjects] = useState([]);
   const [projectBlocks, setProjectBlocks] = useState([]);
   const [projectProperties, setProjectProperties] = useState([]);
@@ -417,6 +423,7 @@ function App() {
       { id: "projects", label: "Projects", permission: "projects:read" },
       { id: "orgTree", label: "Organization Tree", permission: "orgtree:read" },
       { id: "sales", label: "Property Sales", permission: "sales:read" },
+      { id: "customers", label: "Customers", permission: "sales:read" },
       { id: "commissions", label: "Commissions", permission: "commissions:read" },
       { id: "buybacks", label: "Buybacks", permission: "buybacks:read" },
       { id: "reports", label: "Reports", permission: "reports:read" },
@@ -529,6 +536,21 @@ function App() {
     loadProjectDetailProperties(projectId);
   };
 
+  const openCustomerDetail = (customerId) => {
+    if (!customerId) return;
+    const run = async () => {
+      try {
+        const data = await fetchCustomerDetail(customerId);
+        setSelectedCustomerDetail(data.customer || null);
+        setSelectedCustomerSales(data.sales || []);
+        setShowCustomerDetailModal(true);
+      } catch (err) {
+        console.error(err);
+        setFormError("Failed to load customer details.");
+      }
+    };
+    run();
+  };
 
 
   const openPersonProfile = (personId) => {
@@ -540,6 +562,11 @@ function App() {
       }
       if (!fullDataLoaded) {
         await loadData();
+      }
+      const person = people.find((item) => item.id === personId);
+      if (person?.status === "inactive") {
+        addNotification("Inactive members do not have an individual profile.");
+        return;
       }
       setSelectedPersonId(personId);
       requestViewChange("profile");
@@ -961,13 +988,23 @@ function App() {
   const [showPersonModal, setShowPersonModal] = useState(false);
   const [showSaleModal, setShowSaleModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showInvestmentPaymentModal, setShowInvestmentPaymentModal] = useState(false);
   const [showCommissionModal, setShowCommissionModal] = useState(false);
+  const [showCommissionDetailModal, setShowCommissionDetailModal] = useState(false);
+  const [commissionDetailId, setCommissionDetailId] = useState(null);
   const [showProjectModal, setShowProjectModal] = useState(false);
   const [showProjectDetailModal, setShowProjectDetailModal] = useState(false);
   const [showPropertyDetailModal, setShowPropertyDetailModal] = useState(false);
+  const [showCustomerDetailModal, setShowCustomerDetailModal] = useState(false);
+  const [selectedCustomerDetail, setSelectedCustomerDetail] = useState(null);
+  const [selectedCustomerSales, setSelectedCustomerSales] = useState([]);
   const [editingSaleId, setEditingSaleId] = useState(null);
   const [editingPersonId, setEditingPersonId] = useState(null);
   const [showEditPersonModal, setShowEditPersonModal] = useState(false);
+  const [isPersonEditMode, setIsPersonEditMode] = useState(true);
+  const [isSaleEditMode, setIsSaleEditMode] = useState(true);
+  const personEditSnapshotRef = useRef(null);
+  const saleEditSnapshotRef = useRef(null);
   const [dashboardSummary, setDashboardSummary] = useState(null);
   const [peopleLookup, setPeopleLookup] = useState([]);
   const [peopleTableRows, setPeopleTableRows] = useState([]);
@@ -991,15 +1028,25 @@ function App() {
   const [activityTotal, setActivityTotal] = useState(0);
   const [showBuybackModal, setShowBuybackModal] = useState(false);
   const [buybackForm, setBuybackForm] = useState({
+    kind: "investment",
     investmentId: "",
+    saleId: "",
     paidAmount: "",
     paidDate: "",
   });
+  const [investmentPaymentForm, setInvestmentPaymentForm] = useState({
+    investmentId: "",
+    amount: "",
+    date: "",
+  });
+  const [investmentPaymentDetail, setInvestmentPaymentDetail] = useState(null);
   const [notifications, setNotifications] = useState([]);
   const [pendingUndo, setPendingUndo] = useState(null);
   const [reportsView, setReportsView] = useState("analytics");
   const [peopleSearch, setPeopleSearch] = useState("");
   const [salesSearch, setSalesSearch] = useState("");
+  const [peopleDueFilter, setPeopleDueFilter] = useState("all");
+  const [salesDueFilter, setSalesDueFilter] = useState("all");
   const [projectSearch, setProjectSearch] = useState("");
   const [profileSearch, setProfileSearch] = useState("");
   const [commissionSearch, setCommissionSearch] = useState("");
@@ -1015,6 +1062,9 @@ function App() {
   const [buybackDateTo, setBuybackDateTo] = useState("");
   const [buybackPaidFrom, setBuybackPaidFrom] = useState("");
   const [buybackPaidTo, setBuybackPaidTo] = useState("");
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerSort, setCustomerSort] = useState("recent");
+  const [customerPage, setCustomerPage] = useState(1);
   const [peoplePage, setPeoplePage] = useState(1);
   const [salesPage, setSalesPage] = useState(1);
   const [buybackPage, setBuybackPage] = useState(1);
@@ -1025,6 +1075,7 @@ function App() {
   const [usersTotal, setUsersTotal] = useState(0);
   const [peopleSort, setPeopleSort] = useState("recent");
   const [salesSort, setSalesSort] = useState("recent");
+  const [peopleView, setPeopleView] = useState("active");
   const [salesView, setSalesView] = useState("active");
 
   useEffect(() => {
@@ -1044,9 +1095,13 @@ function App() {
     phone: "+91",
     sponsorId: "",
     joinDate: "",
+    isSpecial: false,
     investmentAmount: "",
     investmentArea: "",
+    investmentActualArea: "",
     investmentDate: "",
+    investmentPaymentAmount: "",
+    investmentPaymentDate: "",
     buybackMonths: "",
     returnPercent: "",
     projectId: "",
@@ -1060,6 +1115,7 @@ function App() {
     phone: "+91",
     joinDate: "",
     investmentArea: "",
+    investmentActualArea: "",
     investmentId: "",
     returnPercent: "",
   });
@@ -1071,8 +1127,15 @@ function App() {
     blockId: "",
     propertyId: "",
     areaSqYd: "",
+    actualAreaSqYd: "",
     totalAmount: "",
     saleDate: "",
+    customerName: "",
+    customerPhone: "+91",
+    customerAddress: "",
+    buybackEnabled: false,
+    buybackMonths: "",
+    buybackReturnPercent: "",
     payments: [{ amount: "", date: "" }],
     existingPayments: [],
   });
@@ -1155,6 +1218,7 @@ function App() {
     note: "",
   });
   const [commissionBalance, setCommissionBalance] = useState(null);
+  const [investmentPayments, setInvestmentPayments] = useState([]);
 
 
   const loadData = useCallback(async () => {
@@ -1174,9 +1238,11 @@ function App() {
       if (hasPermission("sales:read")) {
         tasks.sales = fetchSales();
         tasks.payments = fetchPayments();
+        tasks.customers = fetchCustomers();
       }
       if (hasPermission("buybacks:read") || hasPermission("people:read")) {
         tasks.investments = fetchInvestments();
+        tasks.investmentPayments = fetchInvestmentPayments();
       }
       if (hasPermission("commissions:read")) {
         tasks.commissions = fetchCommissionPayments();
@@ -1210,12 +1276,30 @@ function App() {
       });
 
       const investmentData = data.investments || [];
+      const investmentPaymentData = data.investmentPayments || [];
+      const investmentPaymentTotals = investmentPaymentData.reduce((acc, payment) => {
+        const current = acc[payment.investment_id] || 0;
+        acc[payment.investment_id] = current + payment.amount;
+        return acc;
+      }, {});
       const investmentsByPerson = investmentData.reduce((acc, inv) => {
+        const paidAmount = investmentPaymentTotals[inv.id] || 0;
+        const paymentPercent = inv.amount
+          ? Math.min(100, Math.round((paidAmount / inv.amount) * 100))
+          : 0;
+        const rawStatus = inv.payment_status || "pending";
+        const paymentStatus =
+          rawStatus === "cancelled"
+            ? "cancelled"
+            : paymentPercent >= 100
+            ? "paid"
+            : rawStatus;
         acc[inv.person_id] = acc[inv.person_id] || [];
         acc[inv.person_id].push({
           stage: inv.stage,
           amount: inv.amount,
           areaSqYd: inv.area_sq_yd ?? 0,
+          actualAreaSqYd: inv.actual_area_sq_yd ?? null,
           date: inv.date,
           buybackDate: inv.buyback_date,
           buybackMonths: inv.buyback_months ?? 36,
@@ -1224,6 +1308,10 @@ function App() {
           blockId: inv.block_id || "",
           propertyId: inv.property_id || "",
           status: inv.status,
+          paymentStatus,
+          paymentPercent,
+          paymentPaidAmount: paidAmount,
+          cancelledAt: inv.cancelled_at || null,
           paidAmount: inv.paid_amount,
           paidDate: inv.paid_date,
           id: inv.id,
@@ -1238,6 +1326,8 @@ function App() {
         sponsorStage:
           person.sponsor_stage ?? (person.sponsor_id ? 1 : null),
         joinDate: person.join_date,
+        status: person.status || "active",
+        isSpecial: Number(person.is_special || 0) === 1,
         investments: investmentsByPerson[person.id] || [],
       }));
 
@@ -1257,6 +1347,7 @@ function App() {
         sellerId: sale.seller_id,
         propertyName: sale.property_name,
         areaSqYd: sale.area_sq_yd,
+        actualAreaSqYd: sale.actual_area_sq_yd ?? null,
         totalAmount: sale.total_amount,
         saleDate: sale.sale_date,
         status: sale.status || "active",
@@ -1264,11 +1355,21 @@ function App() {
         projectId: sale.project_id || "",
         blockId: sale.block_id || "",
         propertyId: sale.property_id || "",
+        customerId: sale.customer_id || "",
+        buybackEnabled: Number(sale.buyback_enabled || 0) === 1,
+        buybackMonths: sale.buyback_months ?? null,
+        buybackReturnPercent: sale.buyback_return_percent ?? null,
+        buybackDate: sale.buyback_date || null,
+        buybackStatus: sale.buyback_status || "pending",
+        buybackPaidAmount: sale.buyback_paid_amount ?? null,
+        buybackPaidDate: sale.buyback_paid_date || null,
         payments: paymentsBySale[sale.id] || [],
       }));
 
       setPeople(peopleWithInvestments);
       setSales(salesWithPayments);
+      setCustomers(data.customers || []);
+      setInvestmentPayments(investmentPaymentData);
       if (data.projects) {
         setProjects(data.projects.projects || []);
         setProjectBlocks(data.projects.blocks || []);
@@ -1522,6 +1623,8 @@ function App() {
           offset,
           search: peopleSearch || undefined,
           sort: peopleSort,
+          view: peopleView,
+          due: peopleDueFilter === "soon" ? "soon" : undefined,
         });
         setPeopleTableRows(data.rows || []);
         setPeopleTotal(data.total || 0);
@@ -1530,7 +1633,16 @@ function App() {
       }
     };
     loadPeoplePage();
-  }, [authUser, activeView, peoplePage, peopleSearch, peopleSort, hasPermission]);
+  }, [
+    authUser,
+    activeView,
+    peoplePage,
+    peopleSearch,
+    peopleSort,
+    peopleView,
+    peopleDueFilter,
+    hasPermission,
+  ]);
 
   useEffect(() => {
     if (
@@ -1550,6 +1662,7 @@ function App() {
           search: salesSearch || undefined,
           sort: salesSort,
           view: salesView,
+          due: salesDueFilter === "soon" ? "soon" : undefined,
         });
         const rows = (data.rows || []).map((row) => ({
           id: row.id,
@@ -1564,10 +1677,15 @@ function App() {
           propertyName: row.property_name || "",
           location: row.location || "",
           areaSqYd: row.area_sq_yd,
+          actualAreaSqYd: row.actual_area_sq_yd ?? null,
           totalAmount: row.total_amount,
           paidAmount: row.paid_amount || 0,
           status: row.status || "active",
           cancelledAt: row.cancelled_at,
+          paymentDaysLeft: row.payment_days_left ?? null,
+          customerId: row.customer_id || "",
+          customerName: row.customer_name || "",
+          customerPhone: row.customer_phone || "",
         }));
         setSalesTableRows(rows);
         setSalesTotal(data.total || 0);
@@ -1583,8 +1701,31 @@ function App() {
     salesSearch,
     salesSort,
     salesView,
+    salesDueFilter,
     hasPermission,
   ]);
+
+  useEffect(() => {
+    if (
+      !authUser ||
+      activeView !== "customers" ||
+      !hasPermission("sales:read")
+    ) {
+      return;
+    }
+    const loadCustomersPage = async () => {
+      try {
+        const data = await fetchCustomers({
+          search: customerSearch || undefined,
+          sort: customerSort,
+        });
+        setCustomers(data || []);
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    loadCustomersPage();
+  }, [authUser, activeView, customerSearch, customerSort, hasPermission]);
 
   useEffect(() => {
     if (
@@ -1690,6 +1831,30 @@ function App() {
     });
     return map;
   }, [projects]);
+
+  const customersById = useMemo(() => {
+    const map = {};
+    customers.forEach((customer) => {
+      map[customer.id] = customer;
+    });
+    return map;
+  }, [customers]);
+  const saleCustomerMatch = useMemo(() => {
+    const digits = String(saleForm.customerPhone || "")
+      .replace(/\D/g, "")
+      .replace(/^91/, "")
+      .slice(0, 10);
+    if (digits.length !== 10) return null;
+    return (
+      customers.find((customer) => {
+        const customerDigits = String(customer.phone || "")
+          .replace(/\D/g, "")
+          .replace(/^91/, "")
+          .slice(0, 10);
+        return customerDigits === digits;
+      }) || null
+    );
+  }, [saleForm.customerPhone, customers]);
   const blocksById = useMemo(() => {
     const map = {};
     projectBlocks.forEach((block) => {
@@ -1711,6 +1876,10 @@ function App() {
     });
     return map;
   }, [employees]);
+  const activePeople = useMemo(
+    () => people.filter((person) => person.status !== "inactive"),
+    [people]
+  );
 
   const blocksForProject = useCallback(
     (projectId) => projectBlocks.filter((block) => block.project_id === projectId),
@@ -1759,6 +1928,21 @@ function App() {
     });
     return map;
   }, [investmentsFlat]);
+  const investmentPaymentsByInvestment = useMemo(() => {
+    const map = {};
+    investmentPayments.forEach((payment) => {
+      const key = payment.investment_id;
+      if (!key) return;
+      if (!map[key]) {
+        map[key] = [];
+      }
+      map[key].push(payment);
+    });
+    Object.values(map).forEach((list) =>
+      list.sort((a, b) => new Date(b.date) - new Date(a.date))
+    );
+    return map;
+  }, [investmentPayments]);
 
   const salaryPaymentsByKey = useMemo(() => {
     const map = {};
@@ -1827,16 +2011,19 @@ function App() {
   }, [dashboardSummary, commissionSummary]);
 
   useEffect(() => {
-    if (!people.length) {
+    if (!activePeople.length) {
       if (selectedPersonId) {
         setSelectedPersonId("");
       }
       return;
     }
-    if (!selectedPersonId || !people.find((person) => person.id === selectedPersonId)) {
-      setSelectedPersonId(people[0].id);
+    if (
+      !selectedPersonId ||
+      !activePeople.find((person) => person.id === selectedPersonId)
+    ) {
+      setSelectedPersonId(activePeople[0].id);
     }
-  }, [people, selectedPersonId]);
+  }, [activePeople, selectedPersonId]);
 
   useEffect(() => {
     if (!projects.length) {
@@ -1886,10 +2073,26 @@ function App() {
     const totalCommission = commissionSummary.totalCommission;
     const pendingBuybacks = people.flatMap((person) =>
       person.investments
-        .filter((inv) => inv.status === "pending")
+        .filter(
+          (inv) => inv.status === "pending" && inv.paymentStatus === "paid"
+        )
         .map((inv) => ({ person, inv }))
     );
-    return { totalSales, totalArea, totalCommission, pendingBuybacks };
+    const pendingSaleBuybacks = sales
+      .filter(
+        (sale) =>
+          sale.buybackEnabled &&
+          sale.buybackStatus !== "paid" &&
+          sale.status !== "cancelled" &&
+          sumPayments(sale.payments || []) >= sale.totalAmount
+      )
+      .map((sale) => ({ sale }));
+    return {
+      totalSales,
+      totalArea,
+      totalCommission,
+      pendingBuybacks: [...pendingBuybacks, ...pendingSaleBuybacks],
+    };
   }, [people, sales, commissionSummary, dashboardSummary]);
 
   const filteredProjects = useMemo(() => {
@@ -2151,7 +2354,7 @@ function App() {
     );
   };
 
-  const getLevelDistance = (rootId, personId, maxLevels = 9) => {
+  const getLevelDistance = useCallback((rootId, personId, maxLevels = 9) => {
     let current = peopleIndex[personId];
     let level = 0;
     while (current && current.sponsorId && level < maxLevels) {
@@ -2160,7 +2363,7 @@ function App() {
       current = peopleIndex[current.sponsorId];
     }
     return null;
-  };
+  }, [peopleIndex]);
 
   const getContributionToRoot = (rootId, personId) => {
     if (!rootId) return 0;
@@ -2173,14 +2376,101 @@ function App() {
     }
     const level = getLevelDistance(rootId, personId, 9);
     if (!level) return 0;
-    const investmentArea = peopleIndex[personId]?.investments
-      ? [...peopleIndex[personId].investments]
+    const paidInvestments = peopleIndex[personId]?.investments
+      ? peopleIndex[personId].investments.filter(
+          (inv) => inv.paymentStatus === "paid"
+        )
+      : [];
+    const investmentArea = paidInvestments.length
+      ? [...paidInvestments]
           .sort((a, b) => new Date(a.date) - new Date(b.date))[0]
           ?.areaSqYd || 0
       : 0;
     const rate = commissionConfig.levelRates[level - 1] || 0;
     return investmentArea * rate;
   };
+
+  const isSalePaid = useCallback((sale) => {
+    if (!sale || sale.status === "cancelled") return false;
+    const total = Number(sale.totalAmount || 0);
+    if (!total) return false;
+    const paid = sumPayments(sale.payments || []);
+    return paid >= total;
+  }, []);
+
+
+  const commissionDetailPerson = commissionDetailId
+    ? peopleIndex[commissionDetailId]
+    : null;
+  const commissionDetailSummary = commissionDetailId
+    ? commissionSummary.byPerson[commissionDetailId]
+    : null;
+  const commissionDetailPayments = useMemo(() => {
+    if (!commissionDetailId) return [];
+    return commissionPayments
+      .filter((payment) => payment.person_id === commissionDetailId)
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+  }, [commissionDetailId, commissionPayments]);
+  const lastCommissionPayment =
+    commissionDetailPayments.length > 0 ? commissionDetailPayments[0] : null;
+  const commissionDetailSales = useMemo(() => {
+    if (!commissionDetailId) return [];
+    const personalRate = commissionDetailSummary?.personalRate ?? 0;
+    return sales
+      .filter(
+        (sale) => sale.sellerId === commissionDetailId && isSalePaid(sale)
+      )
+      .map((sale) => ({
+        id: sale.id,
+        date: sale.saleDate,
+        projectName: sale.projectId
+          ? projectsById[sale.projectId]?.name || ""
+          : sale.propertyName || "",
+        blockName: sale.blockId ? blocksById[sale.blockId]?.name || "" : "",
+        propertyName: sale.propertyId
+          ? propertiesById[sale.propertyId]?.name || sale.propertyName || ""
+          : sale.propertyName || "",
+        areaSqYd: sale.areaSqYd,
+        rate: personalRate,
+        commission: sale.areaSqYd * personalRate,
+      }))
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+  }, [
+    commissionDetailId,
+    commissionDetailSummary,
+    sales,
+    projectsById,
+    blocksById,
+    propertiesById,
+    isSalePaid,
+  ]);
+  const commissionDetailDownline = useMemo(() => {
+    if (!commissionDetailId) return [];
+    const rows = [];
+    people.forEach((person) => {
+      if (person.id === commissionDetailId) return;
+      if (person.isSpecial) return;
+      const level = getLevelDistance(commissionDetailId, person.id, 9);
+      if (!level) return;
+      const paidInvestment = person.investments
+        ? [...person.investments]
+            .filter((inv) => inv.paymentStatus === "paid")
+            .sort((a, b) => new Date(a.date) - new Date(b.date))[0]
+        : null;
+      if (!paidInvestment) return;
+      const rate = commissionConfig.levelRates[level - 1] || 0;
+      rows.push({
+        id: `${person.id}-${paidInvestment.id}`,
+        memberName: person.name,
+        level,
+        areaSqYd: paidInvestment.areaSqYd,
+        rate,
+        date: paidInvestment.date,
+        commission: paidInvestment.areaSqYd * rate,
+      });
+    });
+    return rows.sort((a, b) => a.level - b.level);
+  }, [commissionDetailId, people, commissionConfig, getLevelDistance]);
 
   const renderTreeNode = (
     personId,
@@ -2353,6 +2643,24 @@ function App() {
     : { stage: 1, directRecruits: 0, progress: 0, nextTarget: 6 };
   const selectedPersonStage = selectedPersonStageSummary.stage;
   const selectedPersonStageRecruits = selectedPersonStageSummary.directRecruits;
+  const editInvestmentMeta = editPersonForm.investmentId
+    ? investmentsById[editPersonForm.investmentId]
+    : null;
+  const editInvestmentPayments = useMemo(() => {
+    if (!editPersonForm.investmentId) return [];
+    return investmentPaymentsByInvestment[editPersonForm.investmentId] || [];
+  }, [editPersonForm.investmentId, investmentPaymentsByInvestment]);
+  const editInvestmentPaidTotal = useMemo(
+    () => editInvestmentPayments.reduce((acc, payment) => acc + payment.amount, 0),
+    [editInvestmentPayments]
+  );
+  const editInvestmentPercent = editInvestmentMeta?.amount
+    ? Math.min(
+        100,
+        Math.round((editInvestmentPaidTotal / editInvestmentMeta.amount) * 100)
+      )
+    : 0;
+  const saleReadOnly = Boolean(editingSaleId && !isSaleEditMode);
 
   const formatName = (value) => (value ? value.toUpperCase() : "");
 
@@ -2368,30 +2676,88 @@ function App() {
 
   const totalPeoplePages = Math.max(1, Math.ceil(peopleTotal / 10));
   const totalSalesPages = Math.max(1, Math.ceil(salesTotal / 10));
-
-  const buybackRows = useMemo(
-    () =>
-      people.flatMap((person) =>
-        person.investments.map((inv) => ({
-          ...inv,
-          personId: person.id,
-          personName: person.name,
-        }))
-      ),
-    [people]
+  const totalCustomerPages = Math.max(
+    1,
+    Math.ceil((customers || []).length / 10)
   );
+
+  const pagedCustomers = useMemo(() => {
+    const start = (customerPage - 1) * 10;
+    return (customers || []).slice(start, start + 10);
+  }, [customers, customerPage]);
+
+  const buybackRows = useMemo(() => {
+    const investmentRows = people.flatMap((person) =>
+      person.investments.map((inv) => ({
+        ...inv,
+        kind: "investment",
+        personId: person.id,
+        personName: person.name,
+        partyName: person.name,
+        buybackDate: inv.buybackDate,
+        paidAmount: inv.paidAmount,
+        paidDate: inv.paidDate,
+        status: inv.status,
+        returnPercent: inv.returnPercent,
+        baseAmount: inv.amount,
+        paymentPercent: inv.paymentPercent || 0,
+        awaitingPayment: inv.paymentStatus !== "paid",
+      }))
+    );
+    const saleRows = sales
+      .filter((sale) => sale.buybackEnabled && sale.status !== "cancelled")
+      .map((sale) => {
+        const paid = sumPayments(sale.payments || []);
+        const paymentPercent = sale.totalAmount
+          ? Math.round((paid / sale.totalAmount) * 100)
+          : 0;
+        const customer = sale.customerId ? customersById[sale.customerId] : null;
+        const customerName = customer?.name || "";
+        return {
+          kind: "sale",
+          id: sale.id,
+          saleId: sale.id,
+          personId: sale.sellerId,
+          personName: peopleIndex[sale.sellerId]?.name || "",
+          partyName: customerName || "Customer",
+          baseAmount: sale.totalAmount,
+          buybackDate: sale.buybackDate,
+          returnPercent: sale.buybackReturnPercent || 0,
+          status: sale.buybackStatus || "pending",
+          paidAmount: sale.buybackPaidAmount,
+          paidDate: sale.buybackPaidDate,
+          paymentPercent,
+          customerId: sale.customerId,
+          customerPhone: customer?.phone || "",
+        };
+      });
+    return [...investmentRows, ...saleRows];
+  }, [people, sales, customersById, peopleIndex]);
 
   const filteredBuybacks = useMemo(() => {
     let rows = buybackRows;
     if (buybackSearch) {
       const term = buybackSearch.toLowerCase();
-      rows = rows.filter((row) => row.personName.toLowerCase().includes(term));
+      rows = rows.filter((row) =>
+        String(row.partyName || row.personName || "")
+          .toLowerCase()
+          .includes(term)
+      );
     }
     if (buybackStatusFilter !== "all") {
-      rows = rows.filter((row) => row.status === buybackStatusFilter);
+      rows = rows.filter((row) => {
+        if (buybackStatusFilter === "pending") {
+          return row.status === "pending" || row.awaitingPayment;
+        }
+        return row.status === buybackStatusFilter;
+      });
     }
     if (buybackStageFilter !== "all") {
-      rows = rows.filter((row) => row.stage === Number(buybackStageFilter));
+      rows = rows.filter(
+        (row) =>
+          row.kind === "investment" &&
+          row.stage === Number(buybackStageFilter)
+      );
     }
     if (buybackDateMode === "buyback" && buybackDateFrom) {
       rows = rows.filter(
@@ -2484,12 +2850,13 @@ function App() {
   );
 
   const filteredProfileList = useMemo(() => {
-    if (!profileSearch) return people;
+    const source = activePeople;
+    if (!profileSearch) return source;
     const term = profileSearch.toLowerCase();
-    return people.filter((person) =>
+    return source.filter((person) =>
       person.name.toLowerCase().includes(term)
     );
-  }, [people, profileSearch]);
+  }, [activePeople, profileSearch]);
 
   function getSaleProjectName(sale) {
     if (!sale) return "";
@@ -2563,9 +2930,13 @@ function App() {
       phone: "+91",
       sponsorId: "",
       joinDate: getNowLocal(),
+      isSpecial: false,
       investmentAmount: "",
       investmentArea: "",
+      investmentActualArea: "",
       investmentDate: getNowLocal(),
+      investmentPaymentAmount: "",
+      investmentPaymentDate: getTodayLocal(),
       buybackMonths: "",
       returnPercent: "",
       projectId: "",
@@ -2581,11 +2952,14 @@ function App() {
       phone: "+91",
       joinDate: "",
       investmentArea: "",
+      investmentActualArea: "",
       investmentId: "",
       returnPercent: "",
     });
     setEditingPersonId(null);
     setEditPersonNameError("");
+    setIsPersonEditMode(true);
+    personEditSnapshotRef.current = null;
   };
 
   const resetSaleForm = () => {
@@ -2595,12 +2969,48 @@ function App() {
       blockId: "",
       propertyId: "",
       areaSqYd: "",
+      actualAreaSqYd: "",
       totalAmount: "",
       saleDate: getNowLocal(),
+      customerName: "",
+      customerPhone: "+91",
+      customerAddress: "",
+      buybackEnabled: false,
+      buybackMonths: "",
+      buybackReturnPercent: "",
       payments: [{ amount: "", date: getTodayLocal() }],
       existingPayments: [],
     });
     setEditingSaleId(null);
+    setIsSaleEditMode(true);
+    saleEditSnapshotRef.current = null;
+  };
+
+  const enterPersonEditMode = () => {
+    personEditSnapshotRef.current = { ...editPersonForm };
+    setIsPersonEditMode(true);
+  };
+
+  const cancelPersonEditMode = () => {
+    if (personEditSnapshotRef.current) {
+      setEditPersonForm(personEditSnapshotRef.current);
+    }
+    setEditPersonNameError("");
+    setFormError("");
+    setIsPersonEditMode(false);
+  };
+
+  const enterSaleEditMode = () => {
+    saleEditSnapshotRef.current = { ...saleForm };
+    setIsSaleEditMode(true);
+  };
+
+  const cancelSaleEditMode = () => {
+    if (saleEditSnapshotRef.current) {
+      setSaleForm(saleEditSnapshotRef.current);
+    }
+    setFormError("");
+    setIsSaleEditMode(false);
   };
 
   const resetProjectForm = () => {
@@ -2628,6 +3038,15 @@ function App() {
       amount: "",
       date: getTodayLocal(),
     });
+  };
+
+  const resetInvestmentPaymentForm = () => {
+    setInvestmentPaymentForm({
+      investmentId: "",
+      amount: "",
+      date: getTodayLocal(),
+    });
+    setInvestmentPaymentDetail(null);
   };
 
   const resetCommissionForm = () => {
@@ -2676,6 +3095,7 @@ function App() {
       setFormError("Phone number must include +91 and 10 digits.");
       return;
     }
+    if (!personForm.isSpecial) {
       if (
         !personForm.investmentAmount ||
         !personForm.investmentDate ||
@@ -2684,7 +3104,9 @@ function App() {
         !personForm.returnPercent ||
         !personForm.projectId ||
         !personForm.blockId ||
-        !personForm.propertyId
+        !personForm.propertyId ||
+        !personForm.investmentPaymentAmount ||
+        !personForm.investmentPaymentDate
       ) {
         setFormError("All fields are required.");
         return;
@@ -2693,6 +3115,23 @@ function App() {
         setFormError("Return percentage must be at least 100.");
         return;
       }
+      const minFirstPayment = Math.ceil(
+        Number(personForm.investmentAmount) * 0.1
+      );
+      if (Number(personForm.investmentPaymentAmount) < minFirstPayment) {
+        setFormError(
+          `First payment must be at least ${formatCurrency(minFirstPayment)}.`
+        );
+        return;
+      }
+      if (
+        Number(personForm.investmentPaymentAmount) >
+        Number(personForm.investmentAmount)
+      ) {
+        setFormError("First payment cannot exceed investment amount.");
+        return;
+      }
+    }
     try {
       const trimmedName = personForm.name.trim();
       if (
@@ -2715,25 +3154,33 @@ function App() {
         sponsor_stage: sponsorStage,
         phone: personForm.phone || null,
         join_date: personForm.joinDate,
+        is_special: personForm.isSpecial ? 1 : 0,
       });
 
-      await createInvestment({
-        person_id: response.id,
-        stage: 1,
-        amount: Number(personForm.investmentAmount),
-        area_sq_yd: Number(personForm.investmentArea),
-        date: personForm.investmentDate,
-        buyback_date: addMonths(
-          personForm.investmentDate,
-          Number(personForm.buybackMonths)
-        ),
-        buyback_months: Number(personForm.buybackMonths),
-        return_percent: Number(personForm.returnPercent),
-        project_id: personForm.projectId,
-        block_id: personForm.blockId,
-        property_id: personForm.propertyId,
-        status: "pending",
-      });
+      if (!personForm.isSpecial) {
+        await createInvestment({
+          person_id: response.id,
+          stage: 1,
+          amount: Number(personForm.investmentAmount),
+          area_sq_yd: Number(personForm.investmentArea),
+          actual_area_sq_yd: personForm.investmentActualArea
+            ? Number(personForm.investmentActualArea)
+            : null,
+          date: personForm.investmentDate,
+          buyback_date: addMonths(
+            personForm.investmentDate,
+            Number(personForm.buybackMonths)
+          ),
+          buyback_months: Number(personForm.buybackMonths),
+          return_percent: Number(personForm.returnPercent),
+          project_id: personForm.projectId,
+          block_id: personForm.blockId,
+          property_id: personForm.propertyId,
+          status: "pending",
+          initial_payment_amount: Number(personForm.investmentPaymentAmount),
+          initial_payment_date: personForm.investmentPaymentDate,
+        });
+      }
 
       await loadData();
       setShowPersonModal(false);
@@ -2750,6 +3197,10 @@ function App() {
     setFormError("");
     if (!hasPermission("people:write")) {
       setFormError("You do not have permission to edit members.");
+      return;
+    }
+    if (!isPersonEditMode) {
+      setFormError("Click Edit to modify this member.");
       return;
     }
     if (!editingPersonId) return;
@@ -2790,6 +3241,9 @@ function App() {
       if (editPersonForm.investmentId) {
         await updateInvestment(editPersonForm.investmentId, {
           area_sq_yd: Number(editPersonForm.investmentArea) || 0,
+          actual_area_sq_yd: editPersonForm.investmentActualArea
+            ? Number(editPersonForm.investmentActualArea)
+            : null,
           return_percent: Number(editPersonForm.returnPercent) || 200,
         });
       }
@@ -2810,6 +3264,10 @@ function App() {
       setFormError("You do not have permission to manage sales.");
       return;
     }
+    if (editingSaleId && !isSaleEditMode) {
+      setFormError("Click Edit to modify this sale.");
+      return;
+    }
     if (
       !saleForm.sellerId ||
       !saleForm.projectId ||
@@ -2822,11 +3280,57 @@ function App() {
       setFormError("All sale fields are required.");
       return;
     }
+    if (
+      !saleForm.customerName ||
+      !saleForm.customerPhone ||
+      !saleForm.customerAddress
+    ) {
+      setFormError("Customer name, phone, and address are required.");
+      return;
+    }
+    const customerPhoneDigits = getLocalPhone(saleForm.customerPhone);
+    if (customerPhoneDigits.length !== 10) {
+      setFormError("Customer phone must include +91 and 10 digits.");
+      return;
+    }
+    const existingCustomer = customers.find(
+      (cust) => getLocalPhone(cust.phone) === customerPhoneDigits
+    );
+    if (
+      existingCustomer &&
+      existingCustomer.name.trim().toLowerCase() !==
+        saleForm.customerName.trim().toLowerCase()
+    ) {
+      setFormError(
+        `Phone already belongs to ${existingCustomer.name}. Please use the same name.`
+      );
+      return;
+    }
+    if (saleForm.buybackEnabled) {
+      if (!saleForm.buybackMonths || !saleForm.buybackReturnPercent) {
+        setFormError("Buyback period and return percentage are required.");
+        return;
+      }
+    }
     try {
       const locationValue = resolveSaleLocation(
         saleForm.projectId,
         editingSaleId ? salesById[editingSaleId]?.location || "" : ""
       );
+      const paymentPayloads = saleForm.payments.filter(
+        (payment) => payment.amount && payment.date
+      );
+      if (paymentPayloads.length) {
+        const minFirstPayment = Math.ceil(
+          Number(saleForm.totalAmount) * 0.1
+        );
+        if (Number(paymentPayloads[0].amount) < minFirstPayment) {
+          setFormError(
+            `First payment must be at least ${formatCurrency(minFirstPayment)}.`
+          );
+          return;
+        }
+      }
       let saleId = editingSaleId;
       if (editingSaleId) {
         await updateSale(editingSaleId, {
@@ -2836,8 +3340,21 @@ function App() {
           property_id: saleForm.propertyId,
           location: locationValue,
           area_sq_yd: Number(saleForm.areaSqYd),
+          actual_area_sq_yd: saleForm.actualAreaSqYd
+            ? Number(saleForm.actualAreaSqYd)
+            : null,
           total_amount: Number(saleForm.totalAmount),
           sale_date: saleForm.saleDate,
+          customer_name: saleForm.customerName,
+          customer_phone: saleForm.customerPhone,
+          customer_address: saleForm.customerAddress,
+          buyback_enabled: saleForm.buybackEnabled ? 1 : 0,
+          buyback_months: saleForm.buybackEnabled
+            ? Number(saleForm.buybackMonths)
+            : null,
+          buyback_return_percent: saleForm.buybackEnabled
+            ? Number(saleForm.buybackReturnPercent)
+            : null,
         });
       } else {
         const response = await createSale({
@@ -2847,15 +3364,25 @@ function App() {
           property_id: saleForm.propertyId,
           location: locationValue,
           area_sq_yd: Number(saleForm.areaSqYd),
+          actual_area_sq_yd: saleForm.actualAreaSqYd
+            ? Number(saleForm.actualAreaSqYd)
+            : null,
           total_amount: Number(saleForm.totalAmount),
           sale_date: saleForm.saleDate,
+          customer_name: saleForm.customerName,
+          customer_phone: saleForm.customerPhone,
+          customer_address: saleForm.customerAddress,
+          buyback_enabled: saleForm.buybackEnabled ? 1 : 0,
+          buyback_months: saleForm.buybackEnabled
+            ? Number(saleForm.buybackMonths)
+            : null,
+          buyback_return_percent: saleForm.buybackEnabled
+            ? Number(saleForm.buybackReturnPercent)
+            : null,
         });
         saleId = response.id;
       }
 
-      const paymentPayloads = saleForm.payments.filter(
-        (payment) => payment.amount && payment.date
-      );
       const scheduledTotal = paymentPayloads.reduce(
         (acc, payment) => acc + Number(payment.amount),
         0
@@ -2892,18 +3419,37 @@ function App() {
         const saleRow = detail.sale;
         await ensureBlockProperties(saleRow.block_id, "all");
         setEditingSaleId(saleRow.id);
-        setSaleForm({
+        const nextForm = {
           sellerId: saleRow.seller_id,
           projectId: saleRow.project_id || "",
           blockId: saleRow.block_id || "",
           propertyId: saleRow.property_id || "",
           areaSqYd: saleRow.area_sq_yd,
+          actualAreaSqYd: saleRow.actual_area_sq_yd ?? "",
           totalAmount: saleRow.total_amount,
           saleDate: toDateTimeLocal(saleRow.sale_date),
+          customerName:
+            customersById[saleRow.customer_id]?.name ||
+            saleRow.customer_name ||
+            "",
+          customerPhone:
+            customersById[saleRow.customer_id]?.phone ||
+            saleRow.customer_phone ||
+            "+91",
+          customerAddress:
+            customersById[saleRow.customer_id]?.address ||
+            saleRow.customer_address ||
+            "",
+          buybackEnabled: Number(saleRow.buyback_enabled || 0) === 1,
+          buybackMonths: saleRow.buyback_months || "",
+          buybackReturnPercent: saleRow.buyback_return_percent || "",
           payments: [{ amount: "", date: getTodayLocal() }],
           existingPayments: detail.payments || [],
-        });
+        };
+        setSaleForm(nextForm);
+        saleEditSnapshotRef.current = nextForm;
         setFormError("");
+        setIsSaleEditMode(false);
         setShowSaleModal(true);
       } catch (err) {
         console.error(err);
@@ -2935,6 +3481,55 @@ function App() {
     run();
   };
 
+  const openInvestmentPaymentModal = (personId) => {
+    const run = async () => {
+      try {
+        if (!fullDataLoaded) {
+          await loadData();
+        }
+        const person = people.find((item) => item.id === personId);
+        const joinInvestment = person?.investments
+          ? [...person.investments].sort(
+              (a, b) => new Date(a.date) - new Date(b.date)
+            )[0]
+          : null;
+        if (!joinInvestment) {
+          setFormError("No investment found for this member.");
+          return;
+        }
+        const payments = await fetchInvestmentPayments({
+          investmentId: joinInvestment.id,
+        });
+        setInvestmentPaymentDetail({
+          investment: joinInvestment,
+          payments: payments || [],
+        });
+        setInvestmentPaymentForm({
+          investmentId: joinInvestment.id,
+          amount: "",
+          date: getTodayLocal(),
+        });
+        setFormError("");
+        setShowInvestmentPaymentModal(true);
+      } catch (err) {
+        console.error(err);
+        setFormError("Failed to load investment details.");
+      }
+    };
+    run();
+  };
+
+  const openCommissionDetail = (personId) => {
+    const run = async () => {
+      if (!fullDataLoaded) {
+        await loadData();
+      }
+      setCommissionDetailId(personId);
+      setShowCommissionDetailModal(true);
+    };
+    run();
+  };
+
   const handleCreatePayment = async (event) => {
     event.preventDefault();
     setFormError("");
@@ -2957,6 +3552,17 @@ function App() {
     if (remaining <= 0) {
       setFormError("This sale is already fully paid.");
       return;
+    }
+    if (paidSoFar === 0) {
+      const minFirstPayment = Math.ceil(
+        ((sale?.total_amount || sale?.totalAmount) || 0) * 0.1
+      );
+      if (Number(paymentForm.amount) < minFirstPayment) {
+        setFormError(
+          `First payment must be at least ${formatCurrency(minFirstPayment)}.`
+        );
+        return;
+      }
     }
     if (Number(paymentForm.amount) > remaining) {
       setFormError("Payment exceeds remaining amount.");
@@ -3215,6 +3821,58 @@ function App() {
     }
   };
 
+  const handleCreateInvestmentPayment = async (event) => {
+    event.preventDefault();
+    setFormError("");
+    if (
+      !investmentPaymentForm.investmentId ||
+      !investmentPaymentForm.amount ||
+      !investmentPaymentForm.date
+    ) {
+      setFormError("All payment fields are required.");
+      return;
+    }
+    const investment = investmentPaymentDetail?.investment;
+    const payments = investmentPaymentDetail?.payments || [];
+    if (!investment) {
+      setFormError("Investment details not found.");
+      return;
+    }
+    const paidSoFar = payments.reduce((acc, payment) => acc + payment.amount, 0);
+    const remaining = investment.amount - paidSoFar;
+    if (remaining <= 0) {
+      setFormError("This investment is already fully paid.");
+      return;
+    }
+    if (Number(investmentPaymentForm.amount) > remaining) {
+      setFormError("Payment exceeds remaining amount.");
+      return;
+    }
+    if (paidSoFar === 0) {
+      const minFirstPayment = Math.ceil(investment.amount * 0.1);
+      if (Number(investmentPaymentForm.amount) < minFirstPayment) {
+        setFormError(
+          `First payment must be at least ${formatCurrency(minFirstPayment)}.`
+        );
+        return;
+      }
+    }
+    try {
+      await createInvestmentPayment({
+        investment_id: investmentPaymentForm.investmentId,
+        amount: Number(investmentPaymentForm.amount),
+        date: investmentPaymentForm.date,
+      });
+      await loadData();
+      setShowInvestmentPaymentModal(false);
+      resetInvestmentPaymentForm();
+      addNotification("Investment payment added successfully.");
+    } catch (err) {
+      console.error(err);
+      setFormError("Failed to add investment payment.");
+    }
+  };
+
   const confirmUndoActivity = (log) => {
     if (!log) return;
     setPendingUndo({
@@ -3404,13 +4062,27 @@ function App() {
     }
   };
 
-  const openBuybackModal = (investment) => {
-    setBuybackForm({
-      investmentId: investment.id,
-      paidAmount:
-        investment.amount * ((investment.returnPercent || 200) / 100),
-      paidDate: getNowLocal(),
-    });
+  const openBuybackModal = (row) => {
+    if (!row) return;
+    if (row.kind === "sale") {
+      const expected =
+        row.baseAmount * ((row.returnPercent || 0) / 100 || 1);
+      setBuybackForm({
+        kind: "sale",
+        investmentId: "",
+        saleId: row.saleId || row.id,
+        paidAmount: Math.round(expected),
+        paidDate: getNowLocal(),
+      });
+    } else {
+      setBuybackForm({
+        kind: "investment",
+        investmentId: row.id,
+        saleId: "",
+        paidAmount: row.amount * ((row.returnPercent || 200) / 100),
+        paidDate: getNowLocal(),
+      });
+    }
     setFormError("");
     setShowBuybackModal(true);
   };
@@ -3422,29 +4094,40 @@ function App() {
       setFormError("You do not have permission to update buybacks.");
       return;
     }
-    if (!buybackForm.investmentId || !buybackForm.paidDate) {
-      setFormError("Paid date is required.");
-      return;
-    }
-    const investment = buybackRows.find(
-      (row) => row.id === buybackForm.investmentId
-    );
-    if (investment?.buybackDate) {
-      const rawDate = investment.buybackDate;
-      const dueDate = rawDate.includes("T")
-        ? new Date(rawDate)
-        : new Date(`${rawDate}T23:59:59`);
-      if (new Date() < dueDate) {
-        setFormError("Buyback date is yet to come.");
-        return;
-      }
-    }
     try {
-      await updateInvestment(buybackForm.investmentId, {
-        status: "paid",
-        paid_amount: Number(buybackForm.paidAmount),
-        paid_date: buybackForm.paidDate,
-      });
+      if (buybackForm.kind === "sale") {
+        if (!buybackForm.saleId || !buybackForm.paidDate) {
+          setFormError("Paid date is required.");
+          return;
+        }
+        await updateSaleBuyback(buybackForm.saleId, {
+          paid_amount: Number(buybackForm.paidAmount),
+          paid_date: buybackForm.paidDate,
+        });
+      } else {
+        if (!buybackForm.investmentId || !buybackForm.paidDate) {
+          setFormError("Paid date is required.");
+          return;
+        }
+        const investment = buybackRows.find(
+          (row) => row.id === buybackForm.investmentId
+        );
+        if (investment?.buybackDate) {
+          const rawDate = investment.buybackDate;
+          const dueDate = rawDate.includes("T")
+            ? new Date(rawDate)
+            : new Date(`${rawDate}T23:59:59`);
+          if (new Date() < dueDate) {
+            setFormError("Buyback date is yet to come.");
+            return;
+          }
+        }
+        await updateInvestment(buybackForm.investmentId, {
+          status: "paid",
+          paid_amount: Number(buybackForm.paidAmount),
+          paid_date: buybackForm.paidDate,
+        });
+      }
       await loadData();
       setShowBuybackModal(false);
       addNotification("Buyback marked as paid.");
@@ -3776,6 +4459,32 @@ function App() {
               <div className="card-header">
                 <h3>Team Members</h3>
                 <div className="top-actions">
+                  <div className="segmented">
+                    <button
+                      className={`segmented-btn ${
+                        peopleView === "active" ? "active" : ""
+                      }`}
+                      type="button"
+                      onClick={() => {
+                        setPeopleView("active");
+                        setPeoplePage(1);
+                      }}
+                    >
+                      Active
+                    </button>
+                    <button
+                      className={`segmented-btn ${
+                        peopleView === "inactive" ? "active" : ""
+                      }`}
+                      type="button"
+                      onClick={() => {
+                        setPeopleView("inactive");
+                        setPeoplePage(1);
+                      }}
+                    >
+                      Inactive
+                    </button>
+                  </div>
                   <span className="badge">Total: {peopleTotal}</span>
                   <input
                     className="table-search"
@@ -3798,6 +4507,17 @@ function App() {
                     )}
                     <option value="stage">Higher Stage</option>
                     <option value="recruits">Most Direct Recruits</option>
+                  </select>
+                  <select
+                    className="select"
+                    value={peopleDueFilter}
+                    onChange={(event) => {
+                      setPeopleDueFilter(event.target.value);
+                      setPeoplePage(1);
+                    }}
+                  >
+                    <option value="all">All payments</option>
+                    <option value="soon">Due in 5 days</option>
                   </select>
                   <button
                     className="ghost-button"
@@ -3841,21 +4561,37 @@ function App() {
                     <th>Direct Recruits</th>
                     <th>Invested Area</th>
                     <th>Max Level</th>
+                    <th>Payment</th>
+                    <th>Days Left</th>
+                    <th>Status</th>
                     {canSeeCommission && <th>Total Commission</th>}
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {pagedPeopleTable.map((person) => (
-                    <tr key={person.id}>
+                  {pagedPeopleTable.map((person) => {
+                    const dueSoon =
+                      person.payment_days_left !== null &&
+                      person.payment_days_left <= 5 &&
+                      person.payment_status !== "paid" &&
+                      person.payment_status !== "cancelled";
+                    return (
+                      <tr
+                        key={person.id}
+                        className={dueSoon ? "due-soon" : ""}
+                      >
                       <td>
-                        <button
-                          className="link-button"
-                          type="button"
-                          onClick={() => openPersonProfile(person.id)}
-                        >
-                          {formatName(person.name)}
-                        </button>
+                        {person.status === "inactive" ? (
+                          <span className="muted">{formatName(person.name)}</span>
+                        ) : (
+                          <button
+                            className="link-button"
+                            type="button"
+                            onClick={() => openPersonProfile(person.id)}
+                          >
+                            {formatName(person.name)}
+                          </button>
+                        )}
                       </td>
                       <td>{formatName(person.sponsor_name || "OWNER")}</td>
                       <td>
@@ -3868,6 +4604,31 @@ function App() {
                           : "-"}
                       </td>
                       <td>Level {person.max_level}</td>
+                      <td>
+                        {person.payment_status === "special" ? (
+                          <span className="muted">Special member</span>
+                        ) : (
+                          <>
+                            <div className="progress">
+                              <div
+                                className="progress-fill"
+                                style={{
+                                  width: `${person.payment_percent || 0}%`,
+                                }}
+                              />
+                            </div>
+                            <span className="muted">
+                              {person.payment_percent || 0}% received
+                            </span>
+                          </>
+                        )}
+                      </td>
+                      <td>
+                        {person.payment_status === "special"
+                          ? "-"
+                          : person.payment_days_left ?? "-"}
+                      </td>
+                      <td>{person.status || "active"}</td>
                       {canSeeCommission && (
                         <td>{formatCurrency(person.total_commission || 0)}</td>
                       )}
@@ -3894,30 +4655,48 @@ function App() {
                                         new Date(a.date) - new Date(b.date)
                                     )[0]
                                   : null;
-                                setEditingPersonId(fullPerson.id);
-                                setEditPersonForm({
+                                const nextForm = {
                                   name: fullPerson.name,
                                   phone: fullPerson.phone || "+91",
                                   joinDate: toDateTimeLocal(fullPerson.joinDate),
                                   investmentArea: joinInvestment?.areaSqYd || "",
+                                  investmentActualArea:
+                                    joinInvestment?.actualAreaSqYd || "",
                                   investmentId: joinInvestment?.id || "",
                                   returnPercent:
                                     joinInvestment?.returnPercent || 200,
-                                });
+                                };
+                                setEditingPersonId(fullPerson.id);
+                                setEditPersonForm(nextForm);
+                                personEditSnapshotRef.current = nextForm;
                                 setFormError("");
+                                setIsPersonEditMode(false);
                                 setShowEditPersonModal(true);
                               };
                               go();
                             }}
                           >
-                            Edit
+                            View
                           </button>
                         ) : (
                           <span className="muted">Restricted</span>
                         )}
+                        {hasPermission("people:write") &&
+                          person.payment_status !== "special" &&
+                          person.payment_status !== "paid" &&
+                          person.status !== "inactive" && (
+                            <button
+                              className="ghost-button"
+                              type="button"
+                              onClick={() => openInvestmentPaymentModal(person.id)}
+                            >
+                              Add Payment
+                            </button>
+                          )}
                       </td>
-                    </tr>
-                  ))}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               <div className="pagination">
@@ -4417,7 +5196,7 @@ function App() {
                   </div>
                   <input
                     className="table-search"
-                    placeholder="Search by seller or project..."
+                    placeholder="Search by seller, project, or customer..."
                     value={salesSearch}
                     onChange={(event) => {
                       setSalesSearch(event.target.value);
@@ -4432,6 +5211,17 @@ function App() {
                     <option value="recent">Recent</option>
                     <option value="alpha">A to Z</option>
                   </select>
+                  <select
+                    className="select"
+                    value={salesDueFilter}
+                    onChange={(event) => {
+                      setSalesDueFilter(event.target.value);
+                      setSalesPage(1);
+                    }}
+                  >
+                    <option value="all">All payments</option>
+                    <option value="soon">Due in 5 days</option>
+                  </select>
                   <button
                     className="ghost-button"
                     type="button"
@@ -4444,6 +5234,7 @@ function App() {
                           block: sale.blockName,
                           location: sale.location,
                           area_sq_yd: sale.areaSqYd,
+                          actual_area_sq_yd: sale.actualAreaSqYd || "",
                           total_amount: sale.totalAmount,
                           sale_date: sale.saleDate,
                         }))
@@ -4478,6 +5269,7 @@ function App() {
                     <th>Block</th>
                     <th>Property</th>
                     <th>Area</th>
+                    <th>Actual Area</th>
                     <th>Total</th>
                     {salesView === "cancelled" ? (
                       <>
@@ -4488,6 +5280,7 @@ function App() {
                     ) : (
                       <>
                         <th>Payments</th>
+                        <th>Days Left</th>
                         <th>Status</th>
                         <th>Actions</th>
                       </>
@@ -4504,8 +5297,13 @@ function App() {
                       100,
                       Math.round((paid / sale.totalAmount) * 100)
                     );
+                    const dueSoon =
+                      sale.paymentDaysLeft !== null &&
+                      sale.paymentDaysLeft <= 5 &&
+                      percent < 100 &&
+                      sale.status !== "cancelled";
                     return (
-                      <tr key={sale.id}>
+                      <tr key={sale.id} className={dueSoon ? "due-soon" : ""}>
                         <td>{formatDate(sale.saleDate)}</td>
                         <td>{formatName(sale.sellerName)}</td>
                         <td>
@@ -4536,6 +5334,11 @@ function App() {
                           )}
                         </td>
                         <td>{sale.areaSqYd} sq yd</td>
+                        <td>
+                          {sale.actualAreaSqYd
+                            ? `${sale.actualAreaSqYd} sq yd`
+                            : "-"}
+                        </td>
                         <td>{formatCurrency(sale.totalAmount)}</td>
                         {salesView === "cancelled" ? (
                           <>
@@ -4554,6 +5357,7 @@ function App() {
                               </div>
                               <span className="muted">{percent}% received</span>
                             </td>
+                            <td>{sale.paymentDaysLeft ?? "-"}</td>
                             <td>{percent === 100 ? "Completed" : "In progress"}</td>
                             <td>
                               <div className="table-actions">
@@ -4564,7 +5368,7 @@ function App() {
                                       type="button"
                                       onClick={() => openEditSale(sale)}
                                     >
-                                      Edit
+                                      View
                                     </button>
                                     {paid < sale.totalAmount && (
                                       <button
@@ -4605,6 +5409,123 @@ function App() {
                   onClick={() =>
                     setSalesPage((prev) =>
                       Math.min(totalSalesPages, prev + 1)
+                    )
+                  }
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {activeView === "customers" && (
+          <section className="grid">
+            <div className="card wide-card">
+              <div className="card-header">
+                <h3>Customers</h3>
+                <div className="top-actions">
+                  <span className="badge">Total: {customers.length}</span>
+                  <input
+                    className="table-search"
+                    placeholder="Search customer..."
+                    value={customerSearch}
+                    onChange={(event) => {
+                      setCustomerSearch(event.target.value);
+                      setCustomerPage(1);
+                    }}
+                  />
+                  <select
+                    className="select"
+                    value={customerSort}
+                    onChange={(event) => {
+                      setCustomerSort(event.target.value);
+                      setCustomerPage(1);
+                    }}
+                  >
+                    <option value="recent">Recent</option>
+                    <option value="alpha">A to Z</option>
+                  </select>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() =>
+                      handleExportCsv(
+                        "customers.csv",
+                        customers.map((customer) => ({
+                          name: customer.name,
+                          phone: customer.phone,
+                          address: customer.address || "",
+                          total_purchases: customer.total_purchases || 0,
+                          total_spent: customer.total_spent || 0,
+                          last_purchase: customer.last_purchase || "",
+                        }))
+                      )
+                    }
+                  >
+                    Export Excel
+                  </button>
+                </div>
+              </div>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Phone</th>
+                    <th>Address</th>
+                    <th>Purchases</th>
+                    <th>Total Spent</th>
+                    <th>Last Purchase</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedCustomers.map((customer) => (
+                    <tr key={customer.id}>
+                      <td>{formatName(customer.name)}</td>
+                      <td>{customer.phone}</td>
+                      <td>{customer.address || "-"}</td>
+                      <td>{customer.total_purchases || 0}</td>
+                      <td>{formatCurrency(customer.total_spent || 0)}</td>
+                      <td>
+                        {customer.last_purchase
+                          ? formatDate(customer.last_purchase)
+                          : "-"}
+                      </td>
+                      <td className="table-actions">
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          onClick={() => openCustomerDetail(customer.id)}
+                        >
+                          View
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="pagination">
+                <button
+                  className="ghost-button"
+                  type="button"
+                  disabled={customerPage === 1}
+                  onClick={() =>
+                    setCustomerPage((prev) => Math.max(1, prev - 1))
+                  }
+                >
+                  Prev
+                </button>
+                <span>
+                  Page {customerPage} of {totalCustomerPages}
+                </span>
+                <button
+                  className="ghost-button"
+                  type="button"
+                  disabled={customerPage === totalCustomerPages}
+                  onClick={() =>
+                    setCustomerPage((prev) =>
+                      Math.min(totalCustomerPages, prev + 1)
                     )
                   }
                 >
@@ -4705,6 +5626,7 @@ function App() {
                     <th>Commission Earned</th>
                     <th>Commission Paid</th>
                     <th>Balance</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -4717,6 +5639,15 @@ function App() {
                       <td>{formatCurrency(row.total_paid)}</td>
                       <td>
                         {formatCurrency(row.total_commission - row.total_paid)}
+                      </td>
+                      <td className="table-actions">
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          onClick={() => openCommissionDetail(row.id)}
+                        >
+                          View
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -4769,17 +5700,20 @@ function App() {
                       handleExportCsv(
                         "buybacks.csv",
                         filteredBuybacks.map((inv) => ({
-                          member: inv.personName,
-                          stage: inv.stage,
-                          investment: inv.amount,
-                          area_sq_yd: inv.areaSqYd,
+                          type: inv.kind,
+                          party: inv.partyName,
+                          stage: inv.kind === "investment" ? inv.stage : "",
+                          base_amount: inv.baseAmount,
+                          area_sq_yd: inv.areaSqYd || "",
                           buyback_date: inv.buybackDate,
                           buyback_amount:
-                            inv.amount * ((inv.returnPercent || 200) / 100),
-                          return_percent: inv.returnPercent || 200,
+                            inv.baseAmount *
+                            ((inv.returnPercent || 0) / 100 || 1),
+                          return_percent: inv.returnPercent || 0,
                           status: inv.status,
                           paid_amount: inv.paidAmount || "",
                           paid_date: inv.paidDate || "",
+                          payment_percent: inv.paymentPercent || "",
                         }))
                       )
                     }
@@ -4791,7 +5725,7 @@ function App() {
               <div className="filter-row">
                 <input
                   className="table-search"
-                  placeholder="Search member..."
+                  placeholder="Search member or customer..."
                   value={buybackSearch}
                   onChange={(event) => {
                     setBuybackSearch(event.target.value);
@@ -4908,47 +5842,67 @@ function App() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Member</th>
+                    <th>Type</th>
+                    <th>Member/Customer</th>
                     <th>Stage</th>
-                    <th>Investment</th>
+                    <th>Amount</th>
                     <th>Area</th>
                     <th>Buyback Date</th>
                     <th>Return %</th>
                     <th>Buyback Amount</th>
+                    <th>Payment %</th>
                     <th>Status</th>
                     <th>Paid Date</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {pagedBuybacks.map((inv) => (
-                    <tr key={inv.id}>
-                      <td>{formatName(inv.personName)}</td>
-                      <td>Stage {inv.stage}</td>
-                      <td>{formatCurrency(inv.amount)}</td>
-                      <td>{inv.areaSqYd} sq yd</td>
-                      <td>{formatDate(inv.buybackDate)}</td>
-                      <td>{inv.returnPercent || 200}%</td>
-                      <td>
-                        {formatCurrency(
-                          inv.amount * ((inv.returnPercent || 200) / 100)
-                        )}
-                      </td>
-                      <td>{inv.status}</td>
-                      <td>{inv.paidDate ? formatDate(inv.paidDate) : "-"}</td>
-                      <td className="table-actions">
-                        {inv.status !== "paid" && hasPermission("buybacks:write") && (
-                          <button
-                            className="ghost-button"
-                            type="button"
-                            onClick={() => openBuybackModal(inv)}
-                          >
-                            Mark Paid
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                  {pagedBuybacks.map((inv) => {
+                    const buybackAmount =
+                      inv.baseAmount *
+                      ((inv.returnPercent || 0) / 100 || 1);
+                    const canMarkPaid =
+                      inv.status !== "paid" &&
+                      hasPermission("buybacks:write") &&
+                      inv.paymentPercent === 100;
+                    return (
+                      <tr key={`${inv.kind}-${inv.id}`}>
+                        <td>{inv.kind === "sale" ? "Sale" : "Investment"}</td>
+                        <td>{formatName(inv.partyName || inv.personName)}</td>
+                        <td>
+                          {inv.kind === "investment" ? `Stage ${inv.stage}` : "-"}
+                        </td>
+                        <td>{formatCurrency(inv.baseAmount)}</td>
+                        <td>
+                          {inv.areaSqYd ? `${inv.areaSqYd} sq yd` : "-"}
+                        </td>
+                        <td>{formatDate(inv.buybackDate)}</td>
+                        <td>{inv.returnPercent || 0}%</td>
+                        <td>{formatCurrency(buybackAmount)}</td>
+                        <td>
+                          {`${inv.paymentPercent || 0}%`}
+                        </td>
+                        <td>
+                          {inv.awaitingPayment ? "Awaiting payment" : inv.status}
+                        </td>
+                        <td>{inv.paidDate ? formatDate(inv.paidDate) : "-"}</td>
+                        <td className="table-actions">
+                          {canMarkPaid && (
+                            <button
+                              className="ghost-button"
+                              type="button"
+                              onClick={() => openBuybackModal(inv)}
+                            >
+                              Mark Paid
+                            </button>
+                          )}
+                          {inv.paymentPercent !== 100 && (
+                            <span className="muted">Awaiting payment</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               <div className="pagination">
@@ -5412,6 +6366,7 @@ function App() {
                                 ? propertiesById[sale.propertyId]?.name || "-"
                                 : "-",
                               area_sq_yd: sale.areaSqYd,
+                              actual_area_sq_yd: sale.actualAreaSqYd || "",
                               amount: formatCurrency(sale.totalAmount),
                               sale_date: sale.saleDate,
                             }))
@@ -5508,6 +6463,7 @@ function App() {
                             <th>Block</th>
                             <th>Property</th>
                             <th>Area</th>
+                            <th>Actual Area</th>
                             <th>Amount</th>
                           </tr>
                         </thead>
@@ -5545,14 +6501,19 @@ function App() {
                                   >
                                     {propertiesById[sale.propertyId]?.name || "-"}
                                   </button>
-                                ) : (
-                                  "-"
-                                )}
-                              </td>
-                              <td>{sale.areaSqYd} sq yd</td>
-                              <td>{formatCurrency(sale.totalAmount)}</td>
-                            </tr>
-                          ))}
+                              ) : (
+                                "-"
+                              )}
+                            </td>
+                            <td>{sale.areaSqYd} sq yd</td>
+                            <td>
+                              {sale.actualAreaSqYd
+                                ? `${sale.actualAreaSqYd} sq yd`
+                                : "-"}
+                            </td>
+                            <td>{formatCurrency(sale.totalAmount)}</td>
+                          </tr>
+                        ))}
                         </tbody>
                   </table>
                   </div>
@@ -5569,6 +6530,7 @@ function App() {
                         <th>Stage</th>
                         <th>Amount</th>
                         <th>Area</th>
+                        <th>Actual Area</th>
                         <th>Buyback Date</th>
                         <th>Return %</th>
                         <th>Buyback Amount</th>
@@ -5614,6 +6576,11 @@ function App() {
                           <td>{inv.stage}</td>
                           <td>{formatCurrency(inv.amount)}</td>
                           <td>{inv.areaSqYd} sq yd</td>
+                          <td>
+                            {inv.actualAreaSqYd
+                              ? `${inv.actualAreaSqYd} sq yd`
+                              : "-"}
+                          </td>
                           <td>{formatDate(inv.buybackDate)}</td>
                           <td>{inv.returnPercent || 200}%</td>
                           <td>
@@ -6419,7 +7386,7 @@ function App() {
                       label: formatName(person.name),
                     })),
                   ]}
-                  placeholder="Search sponsor..."
+                  placeholder="Search..."
                 />
               </label>
               <label>
@@ -6436,154 +7403,258 @@ function App() {
                   required
                 />
               </label>
-              <div className="modal-divider">Joining Investment</div>
-              <label>
-                Amount
-                <input
-                  type="number"
-                  value={personForm.investmentAmount}
-                  onChange={(e) =>
-                    setPersonForm((prev) => ({
-                      ...prev,
-                      investmentAmount: e.target.value,
-                    }))
-                  }
-                  required
-                />
-              </label>
-              <label>
-                Investment Area (sq yd)
-                <input
-                  type="number"
-                  value={personForm.investmentArea}
-                  onChange={(e) =>
-                    setPersonForm((prev) => ({
-                      ...prev,
-                      investmentArea: e.target.value,
-                    }))
-                  }
-                  required
-                />
-              </label>
-              <label>
-                Project
-                <SearchableSelect
-                  key={`${showPersonModal ? "open" : "closed"}-invest-project`}
-                  value={personForm.projectId}
-                  onChange={(value) =>
-                    setPersonForm((prev) => ({
-                      ...prev,
-                      projectId: value,
-                      blockId: "",
-                      propertyId: "",
-                    }))
-                  }
-                  options={projects.map((project) => ({
-                    value: project.id,
-                    label: project.name,
-                  }))}
-                  placeholder="Search project..."
-                />
-              </label>
-              <label>
-                Block
-                <SearchableSelect
-                  key={`${showPersonModal ? "open" : "closed"}-invest-block-${personForm.projectId}`}
-                  value={personForm.blockId}
-                  onChange={(value) =>
-                    setPersonForm((prev) => ({
-                      ...prev,
-                      blockId: value,
-                      propertyId: "",
-                    }))
-                  }
-                  options={blocksForProject(personForm.projectId).map((block) => ({
-                    value: block.id,
-                    label: block.name,
-                  }))}
-                  placeholder={
-                    personForm.projectId
-                      ? "Search block..."
-                      : "Select project first"
-                  }
-                  disabled={!personForm.projectId}
-                />
-              </label>
-              <label>
-                Property
-                <SearchableSelect
-                  key={`${showPersonModal ? "open" : "closed"}-invest-property-${personForm.blockId}`}
-                  value={personForm.propertyId}
-                  onChange={(value) =>
-                    setPersonForm((prev) => ({
-                      ...prev,
-                      propertyId: value,
-                    }))
-                  }
-                  options={propertiesForBlock(personForm.blockId).map((prop) => ({
-                    value: prop.id,
-                    label: prop.name,
-                  }))}
-                  placeholder={
-                    personForm.blockId
-                      ? "Search property..."
-                      : "Select block first"
-                  }
-                  disabled={!personForm.blockId}
-                />
-              </label>
-              <label>
-                Investment Date
-                <input
-                  type="datetime-local"
-                  value={personForm.investmentDate}
-                  onChange={(e) =>
-                    setPersonForm((prev) => ({
-                      ...prev,
-                      investmentDate: e.target.value,
-                    }))
-                  }
-                  required
-                />
-              </label>
-              <label>
-                Buyback Period (months)
-                <select
-                  className="select"
-                  value={personForm.buybackMonths}
-                  onChange={(e) =>
-                    setPersonForm((prev) => ({
-                      ...prev,
-                      buybackMonths: e.target.value,
-                    }))
-                  }
-                  required
-                >
-                  <option value="">Select period</option>
-                  {Array.from({ length: 46 }, (_, idx) => idx + 3).map(
-                    (month) => (
-                      <option key={`bb-${month}`} value={month}>
-                        {month} months
-                      </option>
-                    )
+              <div className="checkbox-grid">
+                <label className="checkbox-item">
+                  <input
+                    type="checkbox"
+                    checked={personForm.isSpecial}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setPersonForm((prev) =>
+                        checked
+                          ? {
+                              ...prev,
+                              isSpecial: true,
+                              investmentAmount: "",
+                              investmentArea: "",
+                              investmentActualArea: "",
+                              investmentPaymentAmount: "",
+                              investmentPaymentDate: getTodayLocal(),
+                              buybackMonths: "",
+                              returnPercent: "",
+                              projectId: "",
+                              blockId: "",
+                              propertyId: "",
+                            }
+                          : { ...prev, isSpecial: false }
+                      );
+                    }}
+                  />
+                  Special member (no investment required)
+                </label>
+              </div>
+              {personForm.isSpecial ? (
+                <p className="helper-text">
+                  Special members can be added without investment. They can
+                  follow the regular process later when an investment is added.
+                </p>
+              ) : (
+                <>
+                  <div className="modal-divider">Joining Investment</div>
+                  <label>
+                    Amount
+                    <input
+                      type="number"
+                      value={personForm.investmentAmount}
+                      onChange={(e) =>
+                        setPersonForm((prev) => ({
+                          ...prev,
+                          investmentAmount: e.target.value,
+                        }))
+                      }
+                      required
+                    />
+                  </label>
+                  <div className="modal-row">
+                    <label>
+                      Investment Area (sq yd)
+                      <input
+                        type="number"
+                        value={personForm.investmentArea}
+                        onChange={(e) =>
+                          setPersonForm((prev) => ({
+                            ...prev,
+                            investmentArea: e.target.value,
+                          }))
+                        }
+                        required
+                      />
+                    </label>
+                    <label>
+                      Actual Area (sq yd)
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={personForm.investmentActualArea}
+                        onChange={(e) =>
+                          setPersonForm((prev) => ({
+                            ...prev,
+                            investmentActualArea: e.target.value,
+                          }))
+                        }
+                        placeholder="Optional"
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    Project
+                    <SearchableSelect
+                      key={`${showPersonModal ? "open" : "closed"}-invest-project`}
+                      value={personForm.projectId}
+                      onChange={(value) =>
+                        setPersonForm((prev) => ({
+                          ...prev,
+                          projectId: value,
+                          blockId: "",
+                          propertyId: "",
+                        }))
+                      }
+                      options={projects.map((project) => ({
+                        value: project.id,
+                        label: project.name,
+                      }))}
+                      placeholder="Search project..."
+                    />
+                  </label>
+                  <label>
+                    Block
+                    <SearchableSelect
+                      key={`${showPersonModal ? "open" : "closed"}-invest-block-${personForm.projectId}`}
+                      value={personForm.blockId}
+                      onChange={(value) =>
+                        setPersonForm((prev) => ({
+                          ...prev,
+                          blockId: value,
+                          propertyId: "",
+                        }))
+                      }
+                      options={blocksForProject(personForm.projectId).map((block) => ({
+                        value: block.id,
+                        label: block.name,
+                      }))}
+                      placeholder={
+                        personForm.projectId
+                          ? "Search block..."
+                          : "Select project first"
+                      }
+                      disabled={!personForm.projectId}
+                    />
+                  </label>
+                  <label>
+                    Property
+                    <SearchableSelect
+                      key={`${showPersonModal ? "open" : "closed"}-invest-property-${personForm.blockId}`}
+                      value={personForm.propertyId}
+                      onChange={(value) =>
+                        setPersonForm((prev) => ({
+                          ...prev,
+                          propertyId: value,
+                        }))
+                      }
+                      options={propertiesForBlock(personForm.blockId).map((prop) => ({
+                        value: prop.id,
+                        label: prop.name,
+                      }))}
+                      placeholder={
+                        personForm.blockId
+                          ? "Search property..."
+                          : "Select block first"
+                      }
+                      disabled={!personForm.blockId}
+                    />
+                  </label>
+                  <label>
+                    Investment Date
+                    <input
+                      type="datetime-local"
+                      value={personForm.investmentDate}
+                      onChange={(e) =>
+                        setPersonForm((prev) => ({
+                          ...prev,
+                          investmentDate: e.target.value,
+                        }))
+                      }
+                      required
+                    />
+                  </label>
+                  {personForm.investmentDate && (
+                    <div className="helper-text">
+                      Payment deadline (15 working days):{" "}
+                      {(() => {
+                        const due = addWorkingDays(personForm.investmentDate, 15);
+                        return due ? formatDate(due.toISOString()) : "-";
+                      })()}
+                    </div>
                   )}
-                </select>
-              </label>
-              <label>
-                Return Percentage
-                <input
-                  type="number"
-                  min="100"
-                  value={personForm.returnPercent}
-                  onChange={(e) =>
-                    setPersonForm((prev) => ({
-                      ...prev,
-                      returnPercent: e.target.value,
-                    }))
-                  }
-                  required
-                />
-              </label>
+                  <label>
+                    Buyback Period (months)
+                    <select
+                      className="select"
+                      value={personForm.buybackMonths}
+                      onChange={(e) =>
+                        setPersonForm((prev) => ({
+                          ...prev,
+                          buybackMonths: e.target.value,
+                        }))
+                      }
+                      required
+                    >
+                      <option value="">Select period</option>
+                      {Array.from({ length: 46 }, (_, idx) => idx + 3).map(
+                        (month) => (
+                          <option key={`bb-${month}`} value={month}>
+                            {month} months
+                          </option>
+                        )
+                      )}
+                    </select>
+                  </label>
+                  <label>
+                    Return Percentage
+                    <input
+                      type="number"
+                      min="100"
+                      value={personForm.returnPercent}
+                      onChange={(e) =>
+                        setPersonForm((prev) => ({
+                          ...prev,
+                          returnPercent: e.target.value,
+                        }))
+                      }
+                      required
+                    />
+                  </label>
+                  <div className="modal-divider">Advance Payment</div>
+                  <div className="modal-row">
+                    <label>
+                      Payment Amount
+                      <input
+                        type="number"
+                        value={personForm.investmentPaymentAmount}
+                        onChange={(e) =>
+                          setPersonForm((prev) => ({
+                            ...prev,
+                            investmentPaymentAmount: e.target.value,
+                          }))
+                        }
+                        required
+                      />
+                    </label>
+                    <label>
+                      Payment Date
+                      <input
+                        type="date"
+                        value={personForm.investmentPaymentDate}
+                        onChange={(e) =>
+                          setPersonForm((prev) => ({
+                            ...prev,
+                            investmentPaymentDate: e.target.value,
+                          }))
+                        }
+                        required
+                      />
+                    </label>
+                  </div>
+                  {personForm.investmentAmount && (
+                    <div className="helper-text">
+                      Minimum first payment:{" "}
+                      {formatCurrency(
+                        Math.ceil(Number(personForm.investmentAmount || 0) * 0.1)
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
               {formError && <p className="form-error">{formError}</p>}
               <button className="primary-button" type="submit">
                 Save Person
@@ -6597,20 +7668,60 @@ function App() {
         <div className="modal-overlay">
           <div className="modal-card">
             <div className="modal-header">
-              <h3>Edit Team Member</h3>
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => setShowEditPersonModal(false)}
-              >
-                Close
-              </button>
+              <h3>{isPersonEditMode ? "Edit Team Member" : "View Team Member"}</h3>
+              <div className="table-actions">
+                {editingPersonId ? (
+                  isPersonEditMode ? (
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={cancelPersonEditMode}
+                    >
+                      Cancel
+                    </button>
+                  ) : (
+                    <>
+                      {hasPermission("people:write") && (
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          onClick={enterPersonEditMode}
+                        >
+                          Edit
+                        </button>
+                      )}
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => {
+                          setShowEditPersonModal(false);
+                          setIsPersonEditMode(true);
+                        }}
+                      >
+                        Close
+                      </button>
+                    </>
+                  )
+                ) : (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      setShowEditPersonModal(false);
+                      setIsPersonEditMode(true);
+                    }}
+                  >
+                    Close
+                  </button>
+                )}
+              </div>
             </div>
             <form className="modal-form" onSubmit={handleUpdatePerson}>
               <label>
                 Full Name
                 <input
                   value={editPersonForm.name}
+                  disabled={!isPersonEditMode}
                   onChange={(e) => {
                     const next = e.target.value;
                     setEditPersonForm((prev) => ({
@@ -6646,6 +7757,7 @@ function App() {
                     inputMode="numeric"
                     maxLength={10}
                     value={getLocalPhone(editPersonForm.phone)}
+                    disabled={!isPersonEditMode}
                     onChange={(e) => {
                       const digits = e.target.value.replace(/\D/g, "").slice(0, 10);
                       setEditPersonForm((prev) => ({
@@ -6663,6 +7775,7 @@ function App() {
                 <input
                   type="datetime-local"
                   value={editPersonForm.joinDate}
+                  disabled={!isPersonEditMode}
                   onChange={(e) =>
                     setEditPersonForm((prev) => ({
                       ...prev,
@@ -6677,10 +7790,26 @@ function App() {
                 <input
                   type="number"
                   value={editPersonForm.investmentArea}
+                  disabled={!isPersonEditMode}
                   onChange={(e) =>
                     setEditPersonForm((prev) => ({
                       ...prev,
                       investmentArea: e.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                Actual Area (sq yd)
+                <input
+                  type="number"
+                  step="0.01"
+                  value={editPersonForm.investmentActualArea}
+                  disabled={!isPersonEditMode}
+                  onChange={(e) =>
+                    setEditPersonForm((prev) => ({
+                      ...prev,
+                      investmentActualArea: e.target.value,
                     }))
                   }
                 />
@@ -6691,6 +7820,7 @@ function App() {
                   type="number"
                   min="100"
                   value={editPersonForm.returnPercent}
+                  disabled={!isPersonEditMode}
                   onChange={(e) =>
                     setEditPersonForm((prev) => ({
                       ...prev,
@@ -6699,10 +7829,49 @@ function App() {
                   }
                 />
               </label>
+              {editPersonForm.investmentId && (
+                <>
+                  <div className="modal-divider">Investment Payments</div>
+                  <div className="helper-text">
+                    Total paid: {formatCurrency(editInvestmentPaidTotal)}{" "}
+                    {"\u2022"} Remaining:{" "}
+                    {formatCurrency(
+                      Math.max(
+                        0,
+                        (editInvestmentMeta?.amount || 0) -
+                          editInvestmentPaidTotal
+                      )
+                    )}{" "}
+                    {"\u2022"} Progress: {editInvestmentPercent}%
+                  </div>
+                  {editInvestmentPayments.length > 0 ? (
+                    <table className="data-table compact">
+                      <thead>
+                        <tr>
+                          <th>Amount</th>
+                          <th>Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {editInvestmentPayments.map((payment, index) => (
+                          <tr key={`inv-pay-${payment.id || index}`}>
+                            <td>{formatCurrency(payment.amount)}</td>
+                            <td>{formatDate(payment.date)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="muted">No payments recorded yet.</p>
+                  )}
+                </>
+              )}
               {formError && <p className="form-error">{formError}</p>}
-              <button className="primary-button" type="submit">
-                Update Member
-              </button>
+              {isPersonEditMode && (
+                <button className="primary-button" type="submit">
+                  Update Member
+                </button>
+              )}
             </form>
           </div>
         </div>
@@ -6712,17 +7881,59 @@ function App() {
         <div className="modal-overlay">
           <div className="modal-card modal-wide">
             <div className="modal-header">
-              <h3>{editingSaleId ? "Edit Property Sale" : "Add Property Sale"}</h3>
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => {
-                  setShowSaleModal(false);
-                  resetSaleForm();
-                }}
-              >
-                Close
-              </button>
+              <h3>
+                {editingSaleId
+                  ? isSaleEditMode
+                    ? "Edit Property Sale"
+                    : "View Property Sale"
+                  : "Add Property Sale"}
+              </h3>
+              <div className="table-actions">
+                {editingSaleId ? (
+                  isSaleEditMode ? (
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={cancelSaleEditMode}
+                    >
+                      Cancel
+                    </button>
+                  ) : (
+                    <>
+                      {hasPermission("sales:write") && (
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          onClick={enterSaleEditMode}
+                        >
+                          Edit
+                        </button>
+                      )}
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => {
+                          setShowSaleModal(false);
+                          resetSaleForm();
+                        }}
+                      >
+                        Close
+                      </button>
+                    </>
+                  )
+                ) : (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      setShowSaleModal(false);
+                      resetSaleForm();
+                    }}
+                  >
+                    Close
+                  </button>
+                )}
+              </div>
             </div>
             <form className="modal-form" onSubmit={handleCreateSale}>
               <label>
@@ -6743,6 +7954,7 @@ function App() {
                     })),
                   ]}
                   placeholder="Search seller..."
+                  disabled={saleReadOnly}
                 />
               </label>
               <label>
@@ -6765,6 +7977,7 @@ function App() {
                     })),
                   ]}
                   placeholder="Search project..."
+                  disabled={saleReadOnly}
                 />
               </label>
               <label>
@@ -6786,7 +7999,7 @@ function App() {
                   placeholder={
                     saleForm.projectId ? "Search block..." : "Select project first"
                   }
-                  disabled={!saleForm.projectId}
+                  disabled={saleReadOnly || !saleForm.projectId}
                 />
               </label>
               <label>
@@ -6812,7 +8025,7 @@ function App() {
                       ? "Search property..."
                       : "Select block first"
                   }
-                  disabled={!saleForm.blockId}
+                  disabled={saleReadOnly || !saleForm.blockId}
                 />
               </label>
               <div className="modal-row">
@@ -6821,6 +8034,7 @@ function App() {
                   <input
                     type="number"
                     value={saleForm.areaSqYd}
+                    disabled={saleReadOnly}
                     onChange={(e) =>
                       setSaleForm((prev) => ({
                         ...prev,
@@ -6831,10 +8045,27 @@ function App() {
                   />
                 </label>
                 <label>
+                  Actual Area (sq yd)
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={saleForm.actualAreaSqYd}
+                    disabled={saleReadOnly}
+                    onChange={(e) =>
+                      setSaleForm((prev) => ({
+                        ...prev,
+                        actualAreaSqYd: e.target.value,
+                      }))
+                    }
+                    placeholder="Optional"
+                  />
+                </label>
+                <label>
                   Total Amount
                   <input
                     type="number"
                     value={saleForm.totalAmount}
+                    disabled={saleReadOnly}
                     onChange={(e) =>
                       setSaleForm((prev) => ({
                         ...prev,
@@ -6850,6 +8081,7 @@ function App() {
                 <input
                   type="datetime-local"
                   value={saleForm.saleDate}
+                  disabled={saleReadOnly}
                   onChange={(e) =>
                     setSaleForm((prev) => ({
                       ...prev,
@@ -6867,6 +8099,155 @@ function App() {
                     return due ? formatDate(due.toISOString()) : "-";
                   })()}
                 </div>
+              )}
+
+              <div className="modal-divider">Customer Details</div>
+              <label>
+                Customer Name
+                <input
+                  value={saleForm.customerName}
+                  disabled={saleReadOnly}
+                  onChange={(e) =>
+                    setSaleForm((prev) => ({
+                      ...prev,
+                      customerName: e.target.value,
+                    }))
+                  }
+                  required
+                />
+              </label>
+              <label>
+                Customer Phone
+                <div className="phone-input">
+                  <span className="phone-prefix">+91</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={10}
+                    value={getLocalPhone(saleForm.customerPhone)}
+                    disabled={saleReadOnly}
+                    onChange={(e) => {
+                      const digits = e.target.value
+                        .replace(/\D/g, "")
+                        .slice(0, 10);
+                      setSaleForm((prev) => {
+                        const prevDigits = getLocalPhone(prev.customerPhone);
+                        const prevMatch = customers.find(
+                          (cust) => getLocalPhone(cust.phone) === prevDigits
+                        );
+                        const nextMatch = customers.find(
+                          (cust) => getLocalPhone(cust.phone) === digits
+                        );
+                        return {
+                          ...prev,
+                          customerPhone: `+91${digits}`,
+                          customerName: nextMatch
+                            ? nextMatch.name
+                            : prevMatch
+                            ? ""
+                            : prev.customerName,
+                          customerAddress: nextMatch
+                            ? nextMatch.address || ""
+                            : prevMatch
+                            ? ""
+                            : prev.customerAddress,
+                        };
+                      });
+                    }}
+                    placeholder="10-digit number"
+                    required
+                  />
+                </div>
+              </label>
+              <label>
+                Customer Address
+                  <input
+                    value={saleForm.customerAddress}
+                    disabled={saleReadOnly}
+                    onChange={(e) =>
+                      setSaleForm((prev) => ({
+                        ...prev,
+                        customerAddress: e.target.value,
+                    }))
+                  }
+                  required
+                />
+              </label>
+              {saleCustomerMatch && (
+                <div className="helper-text">
+                  Existing customer detected. Name and address have been
+                  auto-filled.
+                </div>
+              )}
+              <div className="modal-divider">Buyback (optional)</div>
+              <div className="checkbox-grid">
+                <label className="checkbox-item">
+                  <input
+                    type="checkbox"
+                    checked={saleForm.buybackEnabled}
+                    disabled={saleReadOnly}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setSaleForm((prev) => ({
+                        ...prev,
+                        buybackEnabled: checked,
+                        buybackMonths: checked ? prev.buybackMonths : "",
+                        buybackReturnPercent: checked
+                          ? prev.buybackReturnPercent
+                          : "",
+                      }));
+                    }}
+                  />
+                  This sale includes buyback
+                </label>
+              </div>
+              {saleForm.buybackEnabled && (
+                <>
+                  <div className="modal-row">
+                    <label>
+                      Buyback Period (months)
+                      <select
+                        className="select"
+                        value={saleForm.buybackMonths}
+                        disabled={saleReadOnly}
+                        onChange={(e) =>
+                          setSaleForm((prev) => ({
+                            ...prev,
+                            buybackMonths: e.target.value,
+                          }))
+                        }
+                        required
+                      >
+                        <option value="">Select period</option>
+                        {Array.from({ length: 46 }, (_, idx) => idx + 3).map(
+                          (month) => (
+                            <option key={`bb-sale-${month}`} value={month}>
+                              {month} months
+                            </option>
+                          )
+                        )}
+                      </select>
+                    </label>
+                    <label>
+                      Return Percentage
+                      <input
+                        type="number"
+                        min="100"
+                        value={saleForm.buybackReturnPercent}
+                        disabled={saleReadOnly}
+                        onChange={(e) =>
+                          setSaleForm((prev) => ({
+                            ...prev,
+                            buybackReturnPercent: e.target.value,
+                          }))
+                        }
+                        required
+                      />
+                    </label>
+                  </div>
+                  <div className="helper-text">
+                    Buyback becomes active only after full payment is received.
+                  </div>
+                </>
               )}
 
               {editingSaleId && saleForm.existingPayments.length > 0 && (
@@ -6895,37 +8276,47 @@ function App() {
                 <>
                   <div className="modal-divider">Payment Schedule</div>
                   {saleForm.payments.map((payment, index) => (
-                    <div className="modal-row" key={`payment-${index}`}>
-                      <label>
-                        Amount
-                        <input
-                          type="number"
-                          value={payment.amount}
-                          onChange={(e) => {
-                            const nextPayments = [...saleForm.payments];
-                            nextPayments[index].amount = e.target.value;
-                            setSaleForm((prev) => ({
-                              ...prev,
-                              payments: nextPayments,
-                            }));
-                          }}
-                        />
-                      </label>
-                      <label>
-                        Date
-                        <input
-                          type="date"
-                          value={payment.date}
-                          onChange={(e) => {
-                            const nextPayments = [...saleForm.payments];
-                            nextPayments[index].date = e.target.value;
-                            setSaleForm((prev) => ({
-                              ...prev,
-                              payments: nextPayments,
-                            }));
-                          }}
-                        />
-                      </label>
+                    <div key={`payment-${index}`}>
+                      <div className="modal-row">
+                        <label>
+                          Amount
+                          <input
+                            type="number"
+                            value={payment.amount}
+                            onChange={(e) => {
+                              const nextPayments = [...saleForm.payments];
+                              nextPayments[index].amount = e.target.value;
+                              setSaleForm((prev) => ({
+                                ...prev,
+                                payments: nextPayments,
+                              }));
+                            }}
+                          />
+                        </label>
+                        <label>
+                          Date
+                          <input
+                            type="date"
+                            value={payment.date}
+                            onChange={(e) => {
+                              const nextPayments = [...saleForm.payments];
+                              nextPayments[index].date = e.target.value;
+                              setSaleForm((prev) => ({
+                                ...prev,
+                                payments: nextPayments,
+                              }));
+                            }}
+                          />
+                        </label>
+                      </div>
+                      {index === 0 && saleForm.totalAmount && (
+                        <div className="helper-text">
+                          Minimum first payment:{" "}
+                          {formatCurrency(
+                            Math.ceil(Number(saleForm.totalAmount || 0) * 0.1)
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                   <button
@@ -6946,9 +8337,17 @@ function App() {
                 </>
               )}
               {formError && <p className="form-error">{formError}</p>}
-              <button className="primary-button" type="submit">
-                {editingSaleId ? "Update Sale" : "Save Sale"}
-              </button>
+              {editingSaleId ? (
+                isSaleEditMode && (
+                  <button className="primary-button" type="submit">
+                    Update Sale
+                  </button>
+                )
+              ) : (
+                <button className="primary-button" type="submit">
+                  Save Sale
+                </button>
+              )}
             </form>
           </div>
         </div>
@@ -7015,6 +8414,17 @@ function App() {
                   })()}
                 </div>
               )}
+              {paymentSaleDetail?.sale &&
+                (paymentSaleDetail.payments || []).length === 0 && (
+                  <div className="helper-text">
+                    Minimum first payment:{" "}
+                    {formatCurrency(
+                      Math.ceil(
+                        Number(paymentSaleDetail.sale.total_amount || 0) * 0.1
+                      )
+                    )}
+                  </div>
+                )}
               {paymentSaleDetail?.sale?.sale_date && (
                 <div className="helper-text">
                   Last payment date:{" "}
@@ -7097,6 +8507,143 @@ function App() {
                 Yes, Undo
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showInvestmentPaymentModal && (
+        <div className="modal-overlay">
+          <div className="modal-card">
+            <div className="modal-header">
+              <h3>Add Investment Payment</h3>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => {
+                  setShowInvestmentPaymentModal(false);
+                  resetInvestmentPaymentForm();
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <form
+              className="modal-form"
+              onSubmit={handleCreateInvestmentPayment}
+            >
+              {investmentPaymentDetail?.investment && (
+                <>
+                  <div className="helper-text">
+                    Project:{" "}
+                    {investmentPaymentDetail.investment.projectId
+                      ? projectsById[investmentPaymentDetail.investment.projectId]
+                          ?.name || "-"
+                      : "-"}
+                    {" • "}Block:{" "}
+                    {investmentPaymentDetail.investment.blockId
+                      ? blocksById[investmentPaymentDetail.investment.blockId]
+                          ?.name || "-"
+                      : "-"}
+                    {" • "}Property:{" "}
+                    {investmentPaymentDetail.investment.propertyId
+                      ? propertiesById[
+                          investmentPaymentDetail.investment.propertyId
+                        ]?.name || "-"
+                      : "-"}
+                  </div>
+                  <div className="helper-text">
+                    Remaining amount:{" "}
+                    {(() => {
+                      const paid = (investmentPaymentDetail.payments || []).reduce(
+                        (acc, payment) => acc + payment.amount,
+                        0
+                      );
+                      const remaining = Math.max(
+                        0,
+                        investmentPaymentDetail.investment.amount - paid
+                      );
+                      return formatCurrency(remaining);
+                    })()}
+                  </div>
+                  {(investmentPaymentDetail.payments || []).length === 0 && (
+                    <div className="helper-text">
+                      Minimum first payment:{" "}
+                      {formatCurrency(
+                        Math.ceil(
+                          Number(investmentPaymentDetail.investment.amount || 0) *
+                            0.1
+                        )
+                      )}
+                    </div>
+                  )}
+                  {investmentPaymentDetail.investment.date && (
+                    <div className="helper-text">
+                      Payment deadline (15 working days):{" "}
+                      {(() => {
+                        const due = addWorkingDays(
+                          investmentPaymentDetail.investment.date,
+                          15
+                        );
+                        return due ? formatDate(due.toISOString()) : "-";
+                      })()}
+                    </div>
+                  )}
+                </>
+              )}
+              {investmentPaymentDetail?.payments?.length > 0 && (
+                <>
+                  <div className="modal-divider">Existing Payments</div>
+                  <table className="data-table compact">
+                    <thead>
+                      <tr>
+                        <th>Amount</th>
+                        <th>Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {investmentPaymentDetail.payments.map((payment, index) => (
+                        <tr key={`investment-payment-${index}`}>
+                          <td>{formatCurrency(payment.amount)}</td>
+                          <td>{formatDate(payment.date)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+              <label>
+                Amount
+                <input
+                  type="number"
+                  value={investmentPaymentForm.amount}
+                  onChange={(e) =>
+                    setInvestmentPaymentForm((prev) => ({
+                      ...prev,
+                      amount: e.target.value,
+                    }))
+                  }
+                  required
+                />
+              </label>
+              <label>
+                Payment Date
+                <input
+                  type="date"
+                  value={investmentPaymentForm.date}
+                  onChange={(e) =>
+                    setInvestmentPaymentForm((prev) => ({
+                      ...prev,
+                      date: e.target.value,
+                    }))
+                  }
+                  required
+                />
+              </label>
+              {formError && <p className="form-error">{formError}</p>}
+              <button className="primary-button" type="submit">
+                Save Payment
+              </button>
+            </form>
           </div>
         </div>
       )}
@@ -7731,6 +9278,8 @@ function App() {
                     <th>Status</th>
                     <th>Type</th>
                     <th>Member</th>
+                    <th>Area</th>
+                    <th>Actual Area</th>
                     <th>Amount</th>
                     <th>Date</th>
                   </tr>
@@ -7767,6 +9316,18 @@ function App() {
                       : "-";
                     const amount =
                       prop.last_sale_amount ?? sale?.totalAmount ?? prop.last_investment_amount ?? investment?.amount ?? null;
+                    const area =
+                      prop.last_sale_area ??
+                      sale?.areaSqYd ??
+                      prop.last_investment_area ??
+                      investment?.areaSqYd ??
+                      null;
+                    const actualArea =
+                      prop.last_sale_actual_area ??
+                      sale?.actualAreaSqYd ??
+                      prop.last_investment_actual_area ??
+                      investment?.actualAreaSqYd ??
+                      null;
                     const date =
                       prop.last_sale_date ||
                       sale?.saleDate ||
@@ -7800,6 +9361,8 @@ function App() {
                             "-"
                           )}
                         </td>
+                        <td>{area ? `${area} sq yd` : "-"}</td>
+                        <td>{actualArea ? `${actualArea} sq yd` : "-"}</td>
                         <td>{amount ? formatCurrency(amount) : "-"}</td>
                         <td>{date ? formatDate(date) : "-"}</td>
                       </tr>
@@ -7849,6 +9412,8 @@ function App() {
                   prop.last_sale_seller_name || saleSeller?.name || "",
                 saleDate: prop.last_sale_date || sale?.saleDate,
                 areaSqYd: prop.last_sale_area ?? sale?.areaSqYd,
+                actualAreaSqYd:
+                  prop.last_sale_actual_area ?? sale?.actualAreaSqYd,
                 totalAmount: prop.last_sale_amount ?? sale?.totalAmount,
                 status: prop.last_sale_status || sale?.status,
               };
@@ -7863,6 +9428,9 @@ function App() {
                 date: prop.last_investment_date || investment?.date,
                 amount: prop.last_investment_amount ?? investment?.amount,
                 areaSqYd: prop.last_investment_area ?? investment?.areaSqYd,
+                actualAreaSqYd:
+                  prop.last_investment_actual_area ??
+                  investment?.actualAreaSqYd,
                 returnPercent:
                   prop.last_investment_return_percent ?? investment?.returnPercent,
                 buybackDate:
@@ -7931,6 +9499,14 @@ function App() {
                         </strong>
                       </div>
                       <div className="detail-row">
+                        <span>Actual Area</span>
+                        <strong>
+                          {saleData.actualAreaSqYd
+                            ? `${saleData.actualAreaSqYd} sq yd`
+                            : "-"}
+                        </strong>
+                      </div>
+                      <div className="detail-row">
                         <span>Total Amount</span>
                         <strong>
                           {saleData.totalAmount
@@ -7990,6 +9566,14 @@ function App() {
                         </strong>
                       </div>
                       <div className="detail-row">
+                        <span>Actual Area</span>
+                        <strong>
+                          {investmentData.actualAreaSqYd
+                            ? `${investmentData.actualAreaSqYd} sq yd`
+                            : "-"}
+                        </strong>
+                      </div>
+                      <div className="detail-row">
                         <span>Return %</span>
                         <strong>
                           {investmentData.returnPercent
@@ -8016,6 +9600,83 @@ function App() {
                 </>
               );
             })()}
+          </div>
+        </div>
+      )}
+
+      {showCustomerDetailModal && selectedCustomerDetail && (
+        <div className="modal-overlay">
+          <div className="modal-card modal-wide">
+            <div className="modal-header">
+              <h3>Customer Details</h3>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => {
+                  setShowCustomerDetailModal(false);
+                  setSelectedCustomerDetail(null);
+                  setSelectedCustomerSales([]);
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <div className="project-details">
+              <div className="detail-row">
+                <span>Name</span>
+                <strong>{formatName(selectedCustomerDetail.name)}</strong>
+              </div>
+              <div className="detail-row">
+                <span>Phone</span>
+                <strong>{selectedCustomerDetail.phone}</strong>
+              </div>
+              <div className="detail-row">
+                <span>Address</span>
+                <strong>{selectedCustomerDetail.address || "-"}</strong>
+              </div>
+            </div>
+            <div className="modal-divider">Purchase History</div>
+            <div className="table-scroll">
+              <table className="data-table compact">
+                <thead>
+                  <tr>
+                    <th>Sale Date</th>
+                    <th>Project</th>
+                    <th>Block</th>
+                    <th>Property</th>
+                    <th>Area</th>
+                    <th>Actual Area</th>
+                    <th>Total</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedCustomerSales.map((sale) => (
+                    <tr key={sale.id}>
+                      <td>{formatDate(sale.sale_date)}</td>
+                      <td>{sale.project_name || "-"}</td>
+                      <td>{sale.block_name || "-"}</td>
+                      <td>{sale.property_name || "-"}</td>
+                      <td>{sale.area_sq_yd ? `${sale.area_sq_yd} sq yd` : "-"}</td>
+                      <td>
+                        {sale.actual_area_sq_yd
+                          ? `${sale.actual_area_sq_yd} sq yd`
+                          : "-"}
+                      </td>
+                      <td>{formatCurrency(sale.total_amount)}</td>
+                      <td>{sale.status || "active"}</td>
+                    </tr>
+                  ))}
+                  {!selectedCustomerSales.length && (
+                    <tr>
+                      <td colSpan={8} className="muted">
+                        No purchases recorded.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -8126,6 +9787,175 @@ function App() {
                 Save Payout
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showCommissionDetailModal && commissionDetailPerson && (
+        <div className="modal-overlay">
+          <div className="modal-card modal-wide">
+            <div className="modal-header">
+              <h3>
+                Commission Details - {formatName(commissionDetailPerson.name)}
+              </h3>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => {
+                  setShowCommissionDetailModal(false);
+                  setCommissionDetailId(null);
+                }}
+              >
+                Close
+              </button>
+            </div>
+            {commissionDetailSummary ? (
+              <>
+                <div className="project-details">
+                  <div className="detail-row">
+                    <span>Stage</span>
+                    <strong>{commissionDetailSummary.stage}</strong>
+                  </div>
+                  <div className="detail-row">
+                    <span>Personal Rate</span>
+                    <strong>{commissionDetailSummary.personalRate}/sq yd</strong>
+                  </div>
+                  <div className="detail-row">
+                    <span>Commission Earned</span>
+                    <strong>
+                      {formatCurrency(commissionDetailSummary.totalCommission)}
+                    </strong>
+                  </div>
+                  <div className="detail-row">
+                    <span>Commission Paid</span>
+                    <strong>
+                      {formatCurrency(commissionDetailSummary.totalPaid)}
+                    </strong>
+                  </div>
+                  <div className="detail-row">
+                    <span>Pending Commission</span>
+                    <strong>
+                      {formatCurrency(
+                        commissionDetailSummary.totalCommission -
+                          commissionDetailSummary.totalPaid
+                      )}
+                    </strong>
+                  </div>
+                  <div className="detail-row">
+                    <span>Max Level</span>
+                    <strong>{commissionDetailSummary.maxLevel}</strong>
+                  </div>
+                  <div className="detail-row">
+                    <span>Last Payout</span>
+                    <strong>
+                      {lastCommissionPayment
+                        ? `${formatCurrency(lastCommissionPayment.amount)} on ${formatDate(lastCommissionPayment.date)}`
+                        : "-"}
+                    </strong>
+                  </div>
+                </div>
+                <div className="modal-divider">Personal Sales (Paid)</div>
+                <div className="table-scroll">
+                  <table className="data-table compact">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Project</th>
+                        <th>Block</th>
+                        <th>Property</th>
+                        <th>Area</th>
+                        <th>Rate</th>
+                        <th>Commission</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {commissionDetailSales.map((sale) => (
+                        <tr key={`detail-sale-${sale.id}`}>
+                          <td>{formatDate(sale.date)}</td>
+                          <td>{sale.projectName || "-"}</td>
+                          <td>{sale.blockName || "-"}</td>
+                          <td>{sale.propertyName || "-"}</td>
+                          <td>{sale.areaSqYd} sq yd</td>
+                          <td>{sale.rate}/sq yd</td>
+                          <td>{formatCurrency(sale.commission)}</td>
+                        </tr>
+                      ))}
+                      {!commissionDetailSales.length && (
+                        <tr>
+                          <td colSpan={7} className="muted">
+                            No paid sales recorded.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="modal-divider">Downline Contributions (Paid)</div>
+                <div className="table-scroll">
+                  <table className="data-table compact">
+                    <thead>
+                      <tr>
+                        <th>Member</th>
+                        <th>Level</th>
+                        <th>Investment Date</th>
+                        <th>Area</th>
+                        <th>Rate</th>
+                        <th>Commission</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {commissionDetailDownline.map((entry) => (
+                        <tr key={entry.id}>
+                          <td>{formatName(entry.memberName)}</td>
+                          <td>{entry.level}</td>
+                          <td>{formatDate(entry.date)}</td>
+                          <td>{entry.areaSqYd} sq yd</td>
+                          <td>{entry.rate}/sq yd</td>
+                          <td>{formatCurrency(entry.commission)}</td>
+                        </tr>
+                      ))}
+                      {!commissionDetailDownline.length && (
+                        <tr>
+                          <td colSpan={6} className="muted">
+                            No paid downline investments.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="modal-divider">Payout History</div>
+                <div className="table-scroll">
+                  <table className="data-table compact">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Amount</th>
+                        <th>Note</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {commissionDetailPayments.map((payment, index) => (
+                        <tr key={`comm-pay-${payment.id || index}`}>
+                          <td>{formatDate(payment.date)}</td>
+                          <td>{formatCurrency(payment.amount)}</td>
+                          <td>{payment.note || "-"}</td>
+                        </tr>
+                      ))}
+                      {!commissionDetailPayments.length && (
+                        <tr>
+                          <td colSpan={3} className="muted">
+                            No payouts recorded yet.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <p className="muted">No commission data available.</p>
+            )}
           </div>
         </div>
       )}

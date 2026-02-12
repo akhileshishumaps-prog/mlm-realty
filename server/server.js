@@ -70,6 +70,16 @@ const titleCase = (value) =>
     .toLowerCase()
     .replace(/\b\w/g, (char) => char.toUpperCase());
 
+const normalizePhone = (value) =>
+  String(value || "")
+    .replace(/\D/g, "")
+    .trim();
+
+const normalizeName = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+
 const ensurePincodeSeeded = async () => {
   if (pincodeSeedPromise) return pincodeSeedPromise;
   pincodeSeedPromise = (async () => {
@@ -189,6 +199,61 @@ const getAsync = (sql, params = []) =>
       resolve(row);
     });
   });
+
+const buildSalesWithPayments = async (salesRows) => {
+  if (!salesRows.length) return [];
+  const payments = await allAsync("SELECT sale_id, amount FROM payments");
+  const totals = payments.reduce((acc, payment) => {
+    const current = acc[payment.sale_id] || 0;
+    acc[payment.sale_id] = current + payment.amount;
+    return acc;
+  }, {});
+  const sales = toSalesModel(salesRows);
+  return sales.map((sale) => ({
+    ...sale,
+    paidAmount: totals[sale.id] || 0,
+  }));
+};
+
+const resolveCustomer = async ({ name, phone, address }) => {
+  const trimmedName = String(name || "").trim();
+  const cleanedPhone = normalizePhone(phone);
+  if (!trimmedName) {
+    throw new Error("Customer name is required.");
+  }
+  if (!cleanedPhone || cleanedPhone.length < 10) {
+    throw new Error("Customer phone must include 10 digits.");
+  }
+  const existing = await getAsync(
+    "SELECT * FROM customers WHERE phone = ?",
+    [cleanedPhone]
+  );
+  if (existing) {
+    const existingName = normalizeName(existing.name);
+    if (normalizeName(trimmedName) !== existingName) {
+      throw new Error("Customer phone already exists with a different name.");
+    }
+    if (address && address !== existing.address) {
+      await runAsync(
+        "UPDATE customers SET address = ? WHERE id = ?",
+        [address, existing.id]
+      );
+    }
+    return { ...existing, name: existing.name, phone: cleanedPhone };
+  }
+  const id = randomUUID();
+  await runAsync(
+    "INSERT INTO customers (id, name, phone, address, created_at) VALUES (?, ?, ?, ?, ?)",
+    [
+      id,
+      trimmedName,
+      cleanedPhone,
+      address || null,
+      new Date().toISOString(),
+    ]
+  );
+  return { id, name: trimmedName, phone: cleanedPhone, address: address || null };
+};
 
 if (process.env.NODE_ENV === "production" && !process.env.APP_SECRET) {
   throw new Error("APP_SECRET is required in production.");
@@ -339,6 +404,19 @@ const addWorkingDays = (startDate, days) => {
   return date;
 };
 
+const addMonths = (startDate, months) => {
+  const date = new Date(startDate);
+  date.setMonth(date.getMonth() + Number(months || 0));
+  return date;
+};
+
+const toISODate = (value) => {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString().split("T")[0];
+};
+
 const getCommissionConfig = async () => {
   const row = await getAsync(
     "SELECT value FROM app_config WHERE key = 'commission_config'"
@@ -393,6 +471,12 @@ const cancelSale = async (sale, refundAmount, reason) => {
     "UPDATE sales SET status = 'cancelled', cancelled_at = ? WHERE id = ?",
     [cancelledAt, sale.id]
   );
+  if (sale.buyback_enabled) {
+    await runAsync(
+      "UPDATE sales SET buyback_status = 'cancelled' WHERE id = ?",
+      [sale.id]
+    );
+  }
   if (sale.property_id) {
     await runAsync(
       "UPDATE project_properties SET status = 'available', last_sale_id = NULL WHERE id = ?",
@@ -407,6 +491,35 @@ const cancelSale = async (sale, refundAmount, reason) => {
       reason,
       refund_amount: refundAmount,
       sale_date: sale.sale_date,
+      cancelled_at: cancelledAt,
+    },
+  });
+};
+
+const cancelInvestment = async (investment, refundAmount, reason) => {
+  const cancelledAt = new Date().toISOString();
+  await runAsync(
+    "UPDATE investments SET payment_status = 'cancelled', cancelled_at = ? WHERE id = ?",
+    [cancelledAt, investment.id]
+  );
+  if (investment.property_id) {
+    await runAsync(
+      "UPDATE project_properties SET status = 'available', last_investment_id = NULL WHERE id = ?",
+      [investment.property_id]
+    );
+  }
+  await runAsync(
+    "UPDATE people SET status = 'inactive' WHERE id = ?",
+    [investment.person_id]
+  );
+  await logActivity({
+    action_type: "CANCEL_INVESTMENT",
+    entity_type: "investment",
+    entity_id: investment.id,
+    payload: {
+      reason,
+      refund_amount: refundAmount,
+      investment_date: investment.date,
       cancelled_at: cancelledAt,
     },
   });
@@ -448,6 +561,55 @@ const autoCancelOverdueSales = async () => {
     if (paidByDueDate >= sale.total_amount) continue;
     await cancelSale(
       sale,
+      totalPaid,
+      "Overdue payment (15 working days)"
+    );
+    cancelledCount += 1;
+  }
+  return cancelledCount;
+};
+
+const autoCancelOverdueInvestments = async () => {
+  const investments = await allAsync("SELECT * FROM investments");
+  if (!investments.length) return 0;
+  const payments = await allAsync("SELECT * FROM investment_payments");
+  const paymentsByInvestment = payments.reduce((acc, payment) => {
+    acc[payment.investment_id] = acc[payment.investment_id] || [];
+    acc[payment.investment_id].push(payment);
+    return acc;
+  }, {});
+  const now = new Date();
+  let cancelledCount = 0;
+  for (const investment of investments) {
+    if (investment.payment_status === "paid") continue;
+    if (investment.payment_status === "cancelled") continue;
+    const dueDate = addWorkingDays(investment.date, 15);
+    if (now <= dueDate) continue;
+    const invPayments = paymentsByInvestment[investment.id] || [];
+    const totalPaid = invPayments.reduce(
+      (acc, payment) => acc + payment.amount,
+      0
+    );
+    const paidByDueDate = invPayments.reduce((acc, payment) => {
+      const paymentDate = new Date(payment.date);
+      if (paymentDate <= dueDate) {
+        return acc + payment.amount;
+      }
+      return acc;
+    }, 0);
+    if (paidByDueDate >= investment.amount) {
+      await runAsync(
+        "UPDATE investments SET payment_status = 'paid' WHERE id = ?",
+        [investment.id]
+      );
+      await runAsync(
+        "UPDATE people SET status = 'active' WHERE id = ?",
+        [investment.person_id]
+      );
+      continue;
+    }
+    await cancelInvestment(
+      investment,
       totalPaid,
       "Overdue payment (15 working days)"
     );
@@ -758,6 +920,12 @@ app.put("/users/:id", requireAuth, requirePermission("users:manage"), async (req
       password_changed: !!password,
       active: nextActive === 1,
     },
+    undo_payload: {
+      role: user.role,
+      permissions: user.permissions_json ? JSON.parse(user.permissions_json) : [],
+      password_hash: user.password_hash,
+      active: user.active,
+    },
   });
   res.json({ ok: true });
 });
@@ -836,6 +1004,10 @@ app.get("/activity-logs", requirePermission("activity:read"), async (req, res) =
 });
 
 app.get("/dashboard/summary", requirePermission("dashboard:read"), async (req, res) => {
+  const cancelledInvestments = await autoCancelOverdueInvestments();
+  if (cancelledInvestments) {
+    clearCache();
+  }
   const cacheKey = makeCacheKey(req);
   const cached = getCache(cacheKey);
   if (cached) {
@@ -845,7 +1017,7 @@ app.get("/dashboard/summary", requirePermission("dashboard:read"), async (req, r
     "SELECT COALESCE(SUM(total_amount), 0) as total_amount, COALESCE(SUM(area_sq_yd), 0) as total_area FROM sales WHERE status != 'cancelled'"
   );
   const pendingRow = await getAsync(
-    "SELECT COUNT(*) as count FROM investments WHERE status = 'pending'"
+    "SELECT COUNT(*) as count FROM investments WHERE status = 'pending' AND payment_status = 'paid'"
   );
   const recentSales = await allAsync(
     `SELECT s.*, p.name as seller_name, pr.name as project_name, b.name as block_name, prop.name as property_name,
@@ -873,7 +1045,7 @@ app.get("/dashboard/summary", requirePermission("dashboard:read"), async (req, r
     const config = await getCommissionConfig();
     const configHistory = await getCommissionConfigHistory();
     const people = toPeopleModel(peopleRows, investmentsRows);
-    const sales = toSalesModel(salesRows);
+    const sales = await buildSalesWithPayments(salesRows);
     const summary = calculateCommissionSummary(
       people,
       sales,
@@ -910,6 +1082,10 @@ app.get("/people/lookup", requirePermission("people:read"), async (_req, res) =>
 });
 
 app.get("/people-summary", requirePermission("people:read"), async (req, res) => {
+  const cancelledInvestments = await autoCancelOverdueInvestments();
+  if (cancelledInvestments) {
+    clearCache();
+  }
   const cacheKey = makeCacheKey(req);
   const cached = getCache(cacheKey);
   if (cached) {
@@ -919,6 +1095,8 @@ app.get("/people-summary", requirePermission("people:read"), async (req, res) =>
   const offset = Math.max(Number(req.query.offset) || 0, 0);
   const search = String(req.query.search || "").trim().toLowerCase();
   const sort = String(req.query.sort || "recent").trim();
+  const view = String(req.query.view || "active").trim();
+  const due = String(req.query.due || "all").trim();
 
   const [peopleRows, investmentsRows, salesRows, commissionPayments] =
     await Promise.all([
@@ -927,10 +1105,13 @@ app.get("/people-summary", requirePermission("people:read"), async (req, res) =>
       allAsync("SELECT * FROM sales"),
       allAsync("SELECT * FROM commission_payments"),
     ]);
+  const investmentPayments = await allAsync(
+    "SELECT * FROM investment_payments"
+  );
   const config = await getCommissionConfig();
   const configHistory = await getCommissionConfigHistory();
   const people = toPeopleModel(peopleRows, investmentsRows);
-  const sales = toSalesModel(salesRows);
+  const sales = await buildSalesWithPayments(salesRows);
   const summary = calculateCommissionSummary(
     people,
     sales,
@@ -939,6 +1120,14 @@ app.get("/people-summary", requirePermission("people:read"), async (req, res) =>
     configHistory
   );
   const peopleIndex = buildPeopleIndex(people);
+  const paymentsByInvestment = investmentPayments.reduce((acc, payment) => {
+    const entry = acc[payment.investment_id] || { totalPaid: 0 };
+    entry.totalPaid += payment.amount;
+    acc[payment.investment_id] = entry;
+    return acc;
+  }, {});
+  const now = new Date();
+  const msInDay = 1000 * 60 * 60 * 24;
 
   let rows = people.map((person) => {
     const commissionRow = summary.byPerson[person.id];
@@ -948,6 +1137,21 @@ app.get("/people-summary", requirePermission("people:read"), async (req, res) =>
     const firstInvestment = [...investments].sort(
       (a, b) => new Date(a.date) - new Date(b.date)
     )[0];
+    const paymentEntry = firstInvestment
+      ? paymentsByInvestment[firstInvestment.id] || { totalPaid: 0 }
+      : { totalPaid: 0 };
+    const paymentPercent = firstInvestment?.amount
+      ? Math.min(
+          100,
+          Math.round((paymentEntry.totalPaid / firstInvestment.amount) * 100)
+        )
+      : 0;
+    const dueDate = firstInvestment?.date
+      ? addWorkingDays(firstInvestment.date, 15)
+      : null;
+    const daysLeft = dueDate
+      ? Math.max(0, Math.ceil((dueDate - now) / msInDay))
+      : null;
     return {
       id: person.id,
       name: person.name,
@@ -961,11 +1165,35 @@ app.get("/people-summary", requirePermission("people:read"), async (req, res) =>
       max_level: commissionRow?.maxLevel || 0,
       total_commission: commissionRow?.totalCommission || 0,
       join_date: person.joinDate,
+      status: person.status || "active",
+      is_special: person.isSpecial ? 1 : 0,
+      payment_percent: firstInvestment ? paymentPercent : null,
+      payment_paid: firstInvestment ? paymentEntry.totalPaid : null,
+      payment_total: firstInvestment?.amount || 0,
+      payment_status: person.isSpecial
+        ? "special"
+        : firstInvestment?.paymentStatus || "pending",
+      payment_due_date: dueDate ? dueDate.toISOString() : null,
+      payment_days_left: firstInvestment ? daysLeft : null,
     };
   });
 
   if (search) {
     rows = rows.filter((row) => row.name.toLowerCase().includes(search));
+  }
+  if (view === "inactive") {
+    rows = rows.filter((row) => row.status === "inactive");
+  } else if (view === "active") {
+    rows = rows.filter((row) => row.status !== "inactive");
+  }
+  if (due === "soon") {
+    rows = rows.filter(
+      (row) =>
+        row.payment_days_left !== null &&
+        row.payment_days_left <= 5 &&
+        row.payment_status !== "paid" &&
+        row.payment_status !== "cancelled"
+    );
   }
 
   if (sort === "alpha") {
@@ -1016,7 +1244,7 @@ app.get("/commissions-summary", requirePermission("commissions:read"), async (re
   const config = await getCommissionConfig();
   const configHistory = await getCommissionConfigHistory();
   const people = toPeopleModel(peopleRows, investmentsRows);
-  const sales = toSalesModel(salesRows);
+  const sales = await buildSalesWithPayments(salesRows);
   const summary = calculateCommissionSummary(
     people,
     sales,
@@ -1072,7 +1300,7 @@ app.get("/commissions/balance", requirePermission("commissions:read"), async (re
   const config = await getCommissionConfig();
   const configHistory = await getCommissionConfigHistory();
   const people = toPeopleModel(peopleRows, investmentsRows);
-  const sales = toSalesModel(salesRows);
+  const sales = await buildSalesWithPayments(salesRows);
   const summary = calculateCommissionSummary(
     people,
     sales,
@@ -1105,6 +1333,7 @@ app.get("/sales-summary", requirePermission("sales:read"), async (req, res) => {
   const search = String(req.query.search || "").trim().toLowerCase();
   const sort = String(req.query.sort || "recent").trim();
   const view = String(req.query.view || "active").trim();
+  const due = String(req.query.due || "all").trim();
 
   const filters = [];
   const params = [];
@@ -1115,12 +1344,58 @@ app.get("/sales-summary", requirePermission("sales:read"), async (req, res) => {
   }
   if (search) {
     filters.push(
-      "(lower(p.name) LIKE ? OR lower(pr.name) LIKE ? OR lower(b.name) LIKE ? OR lower(prop.name) LIKE ? OR lower(s.location) LIKE ?)"
+      "(lower(p.name) LIKE ? OR lower(pr.name) LIKE ? OR lower(b.name) LIKE ? OR lower(prop.name) LIKE ? OR lower(s.location) LIKE ? OR lower(c.name) LIKE ? OR c.phone LIKE ?)"
     );
     const term = `%${search}%`;
-    params.push(term, term, term, term, term);
+    params.push(term, term, term, term, term, term, term);
   }
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+
+  const orderBy =
+    sort === "alpha"
+      ? "ORDER BY pr.name ASC"
+      : "ORDER BY s.sale_date DESC";
+
+  const baseQuery = `SELECT s.*, p.name as seller_name, pr.name as project_name, b.name as block_name, prop.name as property_name,
+            c.name as customer_name, c.phone as customer_phone, c.address as customer_address,
+            (SELECT COALESCE(SUM(amount),0) FROM payments WHERE sale_id = s.id) as paid_amount
+     FROM sales s
+     LEFT JOIN people p ON p.id = s.seller_id
+     LEFT JOIN projects pr ON pr.id = s.project_id
+     LEFT JOIN project_blocks b ON b.id = s.block_id
+     LEFT JOIN project_properties prop ON prop.id = s.property_id
+     LEFT JOIN customers c ON c.id = s.customer_id
+     ${where}
+     ${orderBy}`;
+
+  const now = new Date();
+  const msInDay = 1000 * 60 * 60 * 24;
+
+  if (due === "soon") {
+    const rows = await allAsync(baseQuery, params);
+    const enhancedRows = rows.map((row) => {
+      const dueDate = row.sale_date ? addWorkingDays(row.sale_date, 15) : null;
+      const daysLeft = dueDate
+        ? Math.max(0, Math.ceil((dueDate - now) / msInDay))
+        : null;
+      return {
+        ...row,
+        payment_due_date: dueDate ? dueDate.toISOString() : null,
+        payment_days_left: daysLeft,
+      };
+    });
+    const filtered = enhancedRows.filter(
+      (row) =>
+        row.payment_days_left !== null &&
+        row.payment_days_left <= 5 &&
+        row.status !== "cancelled"
+    );
+    const total = filtered.length;
+    const paged = filtered.slice(offset, offset + limit);
+    const response = { rows: paged, total };
+    setCache(cacheKey, response, 20000);
+    return res.json(response);
+  }
 
   const totalRow = await getAsync(
     `SELECT COUNT(*) as count
@@ -1129,29 +1404,28 @@ app.get("/sales-summary", requirePermission("sales:read"), async (req, res) => {
      LEFT JOIN projects pr ON pr.id = s.project_id
      LEFT JOIN project_blocks b ON b.id = s.block_id
      LEFT JOIN project_properties prop ON prop.id = s.property_id
+     LEFT JOIN customers c ON c.id = s.customer_id
      ${where}`,
     params
   );
 
-  const orderBy =
-    sort === "alpha"
-      ? "ORDER BY pr.name ASC"
-      : "ORDER BY s.sale_date DESC";
-
   const rows = await allAsync(
-    `SELECT s.*, p.name as seller_name, pr.name as project_name, b.name as block_name, prop.name as property_name,
-            (SELECT COALESCE(SUM(amount),0) FROM payments WHERE sale_id = s.id) as paid_amount
-     FROM sales s
-     LEFT JOIN people p ON p.id = s.seller_id
-     LEFT JOIN projects pr ON pr.id = s.project_id
-     LEFT JOIN project_blocks b ON b.id = s.block_id
-     LEFT JOIN project_properties prop ON prop.id = s.property_id
-     ${where}
-     ${orderBy}
+    `${baseQuery}
      LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   );
-  const response = { rows, total: totalRow?.count || 0 };
+  const enhancedRows = rows.map((row) => {
+    const dueDate = row.sale_date ? addWorkingDays(row.sale_date, 15) : null;
+    const daysLeft = dueDate
+      ? Math.max(0, Math.ceil((dueDate - now) / msInDay))
+      : null;
+    return {
+      ...row,
+      payment_due_date: dueDate ? dueDate.toISOString() : null,
+      payment_days_left: daysLeft,
+    };
+  });
+  const response = { rows: enhancedRows, total: totalRow?.count || 0 };
   setCache(cacheKey, response, 20000);
   res.json(response);
 });
@@ -1189,6 +1463,24 @@ app.post("/activity-logs/:id/undo", requirePermission("activity:write"), async (
         ]);
         await runAsync("DELETE FROM people WHERE id = ?", [logRow.entity_id]);
         break;
+      case "CREATE_USER":
+        await runAsync("DELETE FROM users WHERE id = ?", [logRow.entity_id]);
+        break;
+      case "UPDATE_USER":
+        if (!undoPayload) {
+          return res.status(400).json({ error: "Undo payload missing." });
+        }
+        await runAsync(
+          "UPDATE users SET role = ?, permissions_json = ?, password_hash = ?, active = ? WHERE id = ?",
+          [
+            undoPayload.role,
+            JSON.stringify(undoPayload.permissions || []),
+            undoPayload.password_hash,
+            undoPayload.active,
+            logRow.entity_id,
+          ]
+        );
+        break;
       case "UPDATE_PERSON":
         await runAsync(
           "UPDATE people SET name = ?, phone = ?, join_date = ? WHERE id = ?",
@@ -1223,20 +1515,34 @@ app.post("/activity-logs/:id/undo", requirePermission("activity:write"), async (
             "SELECT * FROM sales WHERE id = ?",
             [logRow.entity_id]
           );
+          if (!undoPayload) {
+            return res.status(400).json({ error: "Undo payload missing." });
+          }
           await runAsync(
             `UPDATE sales
-             SET seller_id = ?, property_name = ?, location = ?, area_sq_yd = ?, total_amount = ?, sale_date = ?, project_id = ?, block_id = ?, property_id = ?
+             SET seller_id = ?, property_name = ?, location = ?, area_sq_yd = ?, actual_area_sq_yd = ?, total_amount = ?, sale_date = ?, project_id = ?, block_id = ?, property_id = ?, customer_id = ?, buyback_enabled = ?, buyback_months = ?, buyback_return_percent = ?, buyback_date = ?, buyback_status = ?, buyback_paid_amount = ?, buyback_paid_date = ?, status = ?, cancelled_at = ?
              WHERE id = ?`,
             [
               undoPayload.seller_id,
               undoPayload.property_name,
               undoPayload.location,
               undoPayload.area_sq_yd,
+              undoPayload.actual_area_sq_yd ?? null,
               undoPayload.total_amount,
               undoPayload.sale_date,
               undoPayload.project_id || null,
               undoPayload.block_id || null,
               undoPayload.property_id || null,
+              undoPayload.customer_id || null,
+              undoPayload.buyback_enabled || 0,
+              undoPayload.buyback_months || null,
+              undoPayload.buyback_return_percent || null,
+              undoPayload.buyback_date || null,
+              undoPayload.buyback_status || "pending",
+              undoPayload.buyback_paid_amount || null,
+              undoPayload.buyback_paid_date || null,
+              undoPayload.status || "active",
+              undoPayload.cancelled_at || null,
               logRow.entity_id,
             ]
           );
@@ -1247,9 +1553,13 @@ app.post("/activity-logs/:id/undo", requirePermission("activity:write"), async (
             );
           }
           if (undoPayload.property_id) {
+            const nextStatus =
+              undoPayload.status === "cancelled" ? "available" : "sold";
+            const nextSaleId =
+              undoPayload.status === "cancelled" ? null : logRow.entity_id;
             await runAsync(
-              "UPDATE project_properties SET status = 'sold', last_sale_id = ? WHERE id = ?",
-              [logRow.entity_id, undoPayload.property_id]
+              "UPDATE project_properties SET status = ?, last_sale_id = ? WHERE id = ?",
+              [nextStatus, nextSaleId, undoPayload.property_id]
             );
           }
         }
@@ -1269,9 +1579,33 @@ app.post("/activity-logs/:id/undo", requirePermission("activity:write"), async (
               [investment.property_id]
             );
           }
+          await runAsync("DELETE FROM investment_payments WHERE investment_id = ?", [
+            logRow.entity_id,
+          ]);
           await runAsync("DELETE FROM investments WHERE id = ?", [
             logRow.entity_id,
           ]);
+          if (investment?.person_id) {
+            const person = await getAsync("SELECT * FROM people WHERE id = ?", [
+              investment.person_id,
+            ]);
+            if (person && person.is_special === 1) {
+              await runAsync("UPDATE people SET status = 'active' WHERE id = ?", [
+                investment.person_id,
+              ]);
+            } else {
+              const remainingPaid = await getAsync(
+                "SELECT COUNT(*) as count FROM investments WHERE person_id = ? AND payment_status = 'paid'",
+                [investment.person_id]
+              );
+              const nextStatus =
+                (remainingPaid?.count || 0) > 0 ? "active" : "pending";
+              await runAsync("UPDATE people SET status = ? WHERE id = ?", [
+                nextStatus,
+                investment.person_id,
+              ]);
+            }
+          }
         }
         break;
       case "CREATE_COMMISSION_PAYMENT":
@@ -1279,19 +1613,194 @@ app.post("/activity-logs/:id/undo", requirePermission("activity:write"), async (
           logRow.entity_id,
         ]);
         break;
+      case "CREATE_EMPLOYEE":
+        await runAsync("DELETE FROM salary_payments WHERE employee_id = ?", [
+          logRow.entity_id,
+        ]);
+        await runAsync("DELETE FROM employees WHERE id = ?", [logRow.entity_id]);
+        break;
+      case "UPDATE_EMPLOYEE":
+        if (!undoPayload) {
+          return res.status(400).json({ error: "Undo payload missing." });
+        }
+        await runAsync(
+          "UPDATE employees SET name = ?, role = ?, phone = ?, join_date = ?, monthly_salary = ? WHERE id = ?",
+          [
+            undoPayload.name,
+            undoPayload.role,
+            undoPayload.phone,
+            undoPayload.join_date,
+            undoPayload.monthly_salary,
+            logRow.entity_id,
+          ]
+        );
+        break;
+      case "CREATE_INVESTMENT_PAYMENT":
+        {
+          await runAsync("DELETE FROM investment_payments WHERE id = ?", [
+            logRow.entity_id,
+          ]);
+          let investmentId = undoPayload?.investment_id || null;
+          if (!investmentId && logRow?.payload_json) {
+            try {
+              investmentId = JSON.parse(logRow.payload_json).investment_id || null;
+            } catch {
+              investmentId = null;
+            }
+          }
+          if (investmentId) {
+            const investment = await getAsync(
+              "SELECT * FROM investments WHERE id = ?",
+              [investmentId]
+            );
+            if (investment) {
+              const remainingPayments = await allAsync(
+                "SELECT amount FROM investment_payments WHERE investment_id = ?",
+                [investmentId]
+              );
+              const totalPaid = remainingPayments.reduce(
+                (acc, payment) => acc + payment.amount,
+                0
+              );
+              const paymentStatus =
+                totalPaid >= investment.amount ? "paid" : "pending";
+              await runAsync(
+                "UPDATE investments SET payment_status = ? WHERE id = ?",
+                [paymentStatus, investmentId]
+              );
+              const person = await getAsync(
+                "SELECT * FROM people WHERE id = ?",
+                [investment.person_id]
+              );
+              if (person && person.is_special === 1) {
+                await runAsync(
+                  "UPDATE people SET status = 'active' WHERE id = ?",
+                  [investment.person_id]
+                );
+              } else {
+                const paidCount = await getAsync(
+                  "SELECT COUNT(*) as count FROM investments WHERE person_id = ? AND payment_status = 'paid'",
+                  [investment.person_id]
+                );
+                const nextStatus =
+                  (paidCount?.count || 0) > 0 ? "active" : "pending";
+                await runAsync(
+                  "UPDATE people SET status = ? WHERE id = ?",
+                  [nextStatus, investment.person_id]
+                );
+              }
+            }
+          }
+        }
+        break;
+      case "CREATE_SALARY_PAYMENT":
+        await runAsync("DELETE FROM salary_payments WHERE id = ?", [
+          logRow.entity_id,
+        ]);
+        break;
       case "UPDATE_BUYBACK":
       case "UPDATE_INVESTMENT":
         await runAsync(
-          "UPDATE investments SET status = ?, paid_amount = ?, paid_date = ?, area_sq_yd = ?, return_percent = ? WHERE id = ?",
+          "UPDATE investments SET status = ?, paid_amount = ?, paid_date = ?, area_sq_yd = ?, actual_area_sq_yd = ?, return_percent = ? WHERE id = ?",
           [
             undoPayload.status,
             undoPayload.paid_amount,
             undoPayload.paid_date,
             undoPayload.area_sq_yd,
+            undoPayload.actual_area_sq_yd ?? null,
             undoPayload.return_percent,
             logRow.entity_id,
           ]
         );
+        break;
+      case "UPDATE_SALE_BUYBACK":
+        if (!undoPayload) {
+          return res.status(400).json({ error: "Undo payload missing." });
+        }
+        await runAsync(
+          "UPDATE sales SET buyback_status = ?, buyback_paid_amount = ?, buyback_paid_date = ? WHERE id = ?",
+          [
+            undoPayload.buyback_status || "pending",
+            undoPayload.buyback_paid_amount || null,
+            undoPayload.buyback_paid_date || null,
+            logRow.entity_id,
+          ]
+        );
+        break;
+      case "CANCEL_SALE":
+        {
+          const sale = await getAsync("SELECT * FROM sales WHERE id = ?", [
+            logRow.entity_id,
+          ]);
+          if (sale) {
+            await runAsync(
+              "UPDATE sales SET status = 'active', cancelled_at = NULL WHERE id = ?",
+              [logRow.entity_id]
+            );
+            if (sale.buyback_enabled) {
+              await runAsync(
+                "UPDATE sales SET buyback_status = 'pending' WHERE id = ?",
+                [logRow.entity_id]
+              );
+            }
+            if (sale.property_id) {
+              await runAsync(
+                "UPDATE project_properties SET status = 'sold', last_sale_id = ? WHERE id = ?",
+                [logRow.entity_id, sale.property_id]
+              );
+            }
+          }
+        }
+        break;
+      case "CANCEL_INVESTMENT":
+        {
+          const investment = await getAsync(
+            "SELECT * FROM investments WHERE id = ?",
+            [logRow.entity_id]
+          );
+          if (investment) {
+            const payments = await allAsync(
+              "SELECT amount FROM investment_payments WHERE investment_id = ?",
+              [investment.id]
+            );
+            const totalPaid = payments.reduce(
+              (acc, payment) => acc + payment.amount,
+              0
+            );
+            const paymentStatus =
+              totalPaid >= investment.amount ? "paid" : "pending";
+            await runAsync(
+              "UPDATE investments SET payment_status = ?, cancelled_at = NULL WHERE id = ?",
+              [paymentStatus, investment.id]
+            );
+            const person = await getAsync("SELECT * FROM people WHERE id = ?", [
+              investment.person_id,
+            ]);
+            if (person && person.is_special === 1) {
+              await runAsync(
+                "UPDATE people SET status = 'active' WHERE id = ?",
+                [investment.person_id]
+              );
+            } else {
+              const paidCount = await getAsync(
+                "SELECT COUNT(*) as count FROM investments WHERE person_id = ? AND payment_status = 'paid'",
+                [investment.person_id]
+              );
+              const nextStatus =
+                (paidCount?.count || 0) > 0 ? "active" : "pending";
+              await runAsync(
+                "UPDATE people SET status = ? WHERE id = ?",
+                [nextStatus, investment.person_id]
+              );
+            }
+            if (investment.property_id) {
+              await runAsync(
+                "UPDATE project_properties SET status = 'sold', last_investment_id = ? WHERE id = ?",
+                [investment.id, investment.property_id]
+              );
+            }
+          }
+        }
         break;
       case "UPDATE_CONFIG":
         await runAsync(
@@ -1313,6 +1822,7 @@ app.post("/activity-logs/:id/undo", requirePermission("activity:write"), async (
       default:
         return res.status(400).json({ error: "Undo not supported" });
     }
+    clearCache();
     await runAsync("UPDATE activity_logs SET status = 'undone' WHERE id = ?", [
       id,
     ]);
@@ -1457,12 +1967,14 @@ app.get(
         s.sale_date AS last_sale_date,
         s.total_amount AS last_sale_amount,
         s.area_sq_yd AS last_sale_area,
+        s.actual_area_sq_yd AS last_sale_actual_area,
         s.status AS last_sale_status,
         s.seller_id AS last_sale_seller_id,
         sp.name AS last_sale_seller_name,
         inv.date AS last_investment_date,
         inv.amount AS last_investment_amount,
         inv.area_sq_yd AS last_investment_area,
+        inv.actual_area_sq_yd AS last_investment_actual_area,
         inv.return_percent AS last_investment_return_percent,
         inv.buyback_date AS last_investment_buyback_date,
         inv.status AS last_investment_status,
@@ -1499,12 +2011,14 @@ app.get(
         s.sale_date AS last_sale_date,
         s.total_amount AS last_sale_amount,
         s.area_sq_yd AS last_sale_area,
+        s.actual_area_sq_yd AS last_sale_actual_area,
         s.status AS last_sale_status,
         s.seller_id AS last_sale_seller_id,
         sp.name AS last_sale_seller_name,
         inv.date AS last_investment_date,
         inv.amount AS last_investment_amount,
         inv.area_sq_yd AS last_investment_area,
+        inv.actual_area_sq_yd AS last_investment_actual_area,
         inv.return_percent AS last_investment_return_percent,
         inv.buyback_date AS last_investment_buyback_date,
         inv.status AS last_investment_status,
@@ -1642,12 +2156,16 @@ app.put("/config", requirePermission("settings:write"), async (req, res) => {
 });
 
 app.get("/people", requirePermission("people:read"), async (_req, res) => {
+  const cancelledCount = await autoCancelOverdueInvestments();
+  if (cancelledCount) {
+    clearCache();
+  }
   const rows = await allAsync("SELECT * FROM people ORDER BY join_date DESC");
   res.json(rows);
 });
 
 app.post("/people", requirePermission("people:write"), async (req, res) => {
-  const { name, sponsor_id, sponsor_stage, phone, join_date } = req.body;
+  const { name, sponsor_id, sponsor_stage, phone, join_date, is_special } = req.body;
   const trimmedName = String(name || "").trim();
   const existing = await getAsync(
     "SELECT id FROM people WHERE lower(trim(name)) = lower(trim(?))",
@@ -1668,8 +2186,10 @@ app.post("/people", requirePermission("people:write"), async (req, res) => {
     }
   }
   const id = randomUUID();
+  const specialFlag = Number(is_special || 0) === 1 ? 1 : 0;
+  const status = specialFlag ? "active" : "pending";
   await runAsync(
-    "INSERT INTO people (id, name, sponsor_id, sponsor_stage, phone, join_date) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO people (id, name, sponsor_id, sponsor_stage, phone, join_date, status, is_special) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     [
       id,
       trimmedName,
@@ -1677,13 +2197,23 @@ app.post("/people", requirePermission("people:write"), async (req, res) => {
       sponsor_stage || null,
       phone || null,
       join_date,
+      status,
+      specialFlag,
     ]
   );
   await logActivity({
     action_type: "CREATE_PERSON",
     entity_type: "person",
     entity_id: id,
-    payload: { name: trimmedName, sponsor_id, sponsor_stage, phone, join_date },
+    payload: {
+      name: trimmedName,
+      sponsor_id,
+      sponsor_stage,
+      phone,
+      join_date,
+      status,
+      is_special: specialFlag,
+    },
   });
   res.json({ id });
 });
@@ -1768,6 +2298,119 @@ app.get("/sales/:id", requirePermission("sales:read"), async (req, res) => {
   res.json({ sale, payments });
 });
 
+app.post(
+  "/sales/:id/buyback",
+  requirePermission("buybacks:write"),
+  async (req, res) => {
+    const { id } = req.params;
+    const { paid_amount, paid_date } = req.body;
+    if (!paid_date) {
+      return res.status(400).json({ error: "Paid date is required." });
+    }
+    const sale = await getAsync("SELECT * FROM sales WHERE id = ?", [id]);
+    if (!sale) {
+      return res.status(404).json({ error: "Sale not found." });
+    }
+    if (!sale.buyback_enabled) {
+      return res.status(400).json({ error: "Buyback is not enabled for this sale." });
+    }
+    if (sale.status === "cancelled") {
+      return res.status(400).json({ error: "Cancelled sale cannot be paid out." });
+    }
+    const paidRow = await getAsync(
+      "SELECT COALESCE(SUM(amount),0) as total_paid FROM payments WHERE sale_id = ?",
+      [id]
+    );
+    if ((paidRow?.total_paid || 0) < sale.total_amount) {
+      return res.status(400).json({ error: "Sale is not fully paid." });
+    }
+    if (sale.buyback_date) {
+      const dueDate = sale.buyback_date.includes("T")
+        ? new Date(sale.buyback_date)
+        : new Date(`${sale.buyback_date}T23:59:59`);
+      if (new Date(paid_date) < dueDate) {
+        return res
+          .status(400)
+          .json({ error: "Buyback date is yet to come." });
+      }
+    }
+    const expectedAmount = sale.buyback_return_percent
+      ? Math.round((sale.total_amount * sale.buyback_return_percent) / 100)
+      : sale.total_amount;
+    const finalAmount =
+      paid_amount === undefined || paid_amount === null || paid_amount === ""
+        ? expectedAmount
+        : Number(paid_amount);
+    const previousBuyback = {
+      buyback_status: sale.buyback_status,
+      buyback_paid_amount: sale.buyback_paid_amount,
+      buyback_paid_date: sale.buyback_paid_date,
+    };
+    await runAsync(
+      "UPDATE sales SET buyback_status = 'paid', buyback_paid_amount = ?, buyback_paid_date = ? WHERE id = ?",
+      [finalAmount, paid_date, id]
+    );
+    await logActivity({
+      action_type: "UPDATE_SALE_BUYBACK",
+      entity_type: "sale",
+      entity_id: id,
+      payload: {
+        buyback_paid_amount: finalAmount,
+        buyback_paid_date: paid_date,
+      },
+      undo_payload: previousBuyback,
+    });
+    res.json({ ok: true });
+  }
+);
+
+app.get("/customers", requirePermission("sales:read"), async (req, res) => {
+  const search = String(req.query.search || "").trim().toLowerCase();
+  const sort = String(req.query.sort || "recent").trim();
+  const filters = [];
+  const params = [];
+  if (search) {
+    filters.push("(lower(c.name) LIKE ? OR c.phone LIKE ?)");
+    const term = `%${search}%`;
+    params.push(term, term);
+  }
+  const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const orderBy =
+    sort === "alpha" ? "ORDER BY c.name ASC" : "ORDER BY last_purchase DESC";
+  const rows = await allAsync(
+    `SELECT c.*,
+            COUNT(s.id) as total_purchases,
+            COALESCE(SUM(CASE WHEN s.status != 'cancelled' THEN s.total_amount ELSE 0 END),0) as total_spent,
+            MAX(s.sale_date) as last_purchase
+     FROM customers c
+     LEFT JOIN sales s ON s.customer_id = c.id
+     ${where}
+     GROUP BY c.id
+     ${orderBy}`,
+    params
+  );
+  res.json(rows);
+});
+
+app.get("/customers/:id", requirePermission("sales:read"), async (req, res) => {
+  const { id } = req.params;
+  const customer = await getAsync("SELECT * FROM customers WHERE id = ?", [id]);
+  if (!customer) {
+    return res.status(404).json({ error: "Customer not found." });
+  }
+  const sales = await allAsync(
+    `SELECT s.*, pr.name as project_name, b.name as block_name, prop.name as property_name
+     FROM sales s
+     LEFT JOIN projects pr ON pr.id = s.project_id
+     LEFT JOIN project_blocks b ON b.id = s.block_id
+     LEFT JOIN project_properties prop ON prop.id = s.property_id
+     WHERE s.customer_id = ?
+     ORDER BY s.sale_date DESC`,
+    [id]
+  );
+  res.json({ customer, sales });
+});
+
 app.post("/sales", requirePermission("sales:write"), async (req, res) => {
   const {
     seller_id,
@@ -1777,11 +2420,39 @@ app.post("/sales", requirePermission("sales:write"), async (req, res) => {
     property_id,
     location,
     area_sq_yd,
+    actual_area_sq_yd,
     total_amount,
     sale_date,
+    customer_name,
+    customer_phone,
+    customer_address,
+    buyback_enabled,
+    buyback_months,
+    buyback_return_percent,
   } = req.body;
   if (!property_id) {
     return res.status(400).json({ error: "Property selection is required." });
+  }
+  let customer = null;
+  try {
+    customer = await resolveCustomer({
+      name: customer_name,
+      phone: customer_phone,
+      address: customer_address,
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || "Invalid customer." });
+  }
+  const buybackEnabled = Number(buyback_enabled || 0) === 1;
+  if (buybackEnabled && !buyback_months) {
+    return res
+      .status(400)
+      .json({ error: "Buyback period is required." });
+  }
+  if (buybackEnabled && !buyback_return_percent) {
+    return res
+      .status(400)
+      .json({ error: "Buyback return percentage is required." });
   }
   const property = await getAsync(
     "SELECT * FROM project_properties WHERE id = ?",
@@ -1816,21 +2487,30 @@ app.post("/sales", requirePermission("sales:write"), async (req, res) => {
     displayName = "Property";
   }
   const id = randomUUID();
+  const buybackDate = buybackEnabled
+    ? toISODate(addMonths(sale_date, Number(buyback_months || 0)))
+    : null;
   await runAsync(
-    `INSERT INTO sales (id, seller_id, property_name, location, area_sq_yd, total_amount, sale_date, status, project_id, block_id, property_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO sales (id, seller_id, property_name, location, area_sq_yd, actual_area_sq_yd, total_amount, sale_date, status, project_id, block_id, property_id, customer_id, buyback_enabled, buyback_months, buyback_return_percent, buyback_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       seller_id,
       displayName,
       location,
       area_sq_yd,
+      actual_area_sq_yd ?? null,
       total_amount,
       sale_date,
       "active",
       project_id || null,
       block_id || null,
       property_id,
+      customer?.id || null,
+      buybackEnabled ? 1 : 0,
+      buybackEnabled ? Number(buyback_months) : null,
+      buybackEnabled ? Number(buyback_return_percent) : null,
+      buybackDate,
     ]
   );
   await runAsync(
@@ -1849,8 +2529,14 @@ app.post("/sales", requirePermission("sales:write"), async (req, res) => {
       property_id,
       location,
       area_sq_yd,
+      actual_area_sq_yd: actual_area_sq_yd ?? null,
       total_amount,
       sale_date,
+      customer_id: customer?.id || null,
+      buyback_enabled: buybackEnabled ? 1 : 0,
+      buyback_months: buybackEnabled ? Number(buyback_months) : null,
+      buyback_return_percent: buybackEnabled ? Number(buyback_return_percent) : null,
+      buyback_date: buybackDate,
     },
   });
   res.json({ id });
@@ -1866,11 +2552,39 @@ app.put("/sales/:id", requirePermission("sales:write"), async (req, res) => {
     property_id,
     location,
     area_sq_yd,
+    actual_area_sq_yd,
     total_amount,
     sale_date,
+    customer_name,
+    customer_phone,
+    customer_address,
+    buyback_enabled,
+    buyback_months,
+    buyback_return_percent,
   } = req.body;
   if (!property_id) {
     return res.status(400).json({ error: "Property selection is required." });
+  }
+  let customer = null;
+  try {
+    customer = await resolveCustomer({
+      name: customer_name,
+      phone: customer_phone,
+      address: customer_address,
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || "Invalid customer." });
+  }
+  const buybackEnabled = Number(buyback_enabled || 0) === 1;
+  if (buybackEnabled && !buyback_months) {
+    return res
+      .status(400)
+      .json({ error: "Buyback period is required." });
+  }
+  if (buybackEnabled && !buyback_return_percent) {
+    return res
+      .status(400)
+      .json({ error: "Buyback return percentage is required." });
   }
   const property = await getAsync(
     "SELECT * FROM project_properties WHERE id = ?",
@@ -1905,20 +2619,35 @@ app.put("/sales/:id", requirePermission("sales:write"), async (req, res) => {
   if (property.status !== "available" && property.id !== current.property_id) {
     return res.status(400).json({ error: "Property is not available." });
   }
+  const buybackDate = buybackEnabled
+    ? toISODate(addMonths(sale_date, Number(buyback_months || 0)))
+    : null;
+  const nextBuybackStatus = buybackEnabled
+    ? current?.buyback_status === "paid"
+      ? "paid"
+      : "pending"
+    : "cancelled";
   await runAsync(
     `UPDATE sales
-     SET seller_id = ?, property_name = ?, location = ?, area_sq_yd = ?, total_amount = ?, sale_date = ?, project_id = ?, block_id = ?, property_id = ?
+     SET seller_id = ?, property_name = ?, location = ?, area_sq_yd = ?, actual_area_sq_yd = ?, total_amount = ?, sale_date = ?, project_id = ?, block_id = ?, property_id = ?, customer_id = ?, buyback_enabled = ?, buyback_months = ?, buyback_return_percent = ?, buyback_date = ?, buyback_status = ?
      WHERE id = ?`,
     [
       seller_id,
       displayName,
       location,
       area_sq_yd,
+      actual_area_sq_yd ?? null,
       total_amount,
       sale_date,
       project_id || null,
       block_id || null,
       property_id,
+      customer?.id || null,
+      buybackEnabled ? 1 : 0,
+      buybackEnabled ? Number(buyback_months) : null,
+      buybackEnabled ? Number(buyback_return_percent) : null,
+      buybackDate,
+      nextBuybackStatus,
       id,
     ]
   );
@@ -1946,8 +2675,14 @@ app.put("/sales/:id", requirePermission("sales:write"), async (req, res) => {
       property_id,
       location,
       area_sq_yd,
+      actual_area_sq_yd: actual_area_sq_yd ?? null,
       total_amount,
       sale_date,
+      customer_id: customer?.id || null,
+      buyback_enabled: buybackEnabled ? 1 : 0,
+      buyback_months: buybackEnabled ? Number(buyback_months) : null,
+      buyback_return_percent: buybackEnabled ? Number(buyback_return_percent) : null,
+      buyback_date: buybackDate,
     },
     undo_payload: current,
   });
@@ -1958,6 +2693,10 @@ app.get(
   "/investments",
   requireAnyPermission(["people:read", "buybacks:read"]),
   async (_req, res) => {
+  const cancelledCount = await autoCancelOverdueInvestments();
+  if (cancelledCount) {
+    clearCache();
+  }
   const rows = await allAsync(
     "SELECT * FROM investments ORDER BY date DESC"
   );
@@ -1973,6 +2712,7 @@ app.post(
     stage,
     amount,
     area_sq_yd,
+    actual_area_sq_yd,
     date,
     buyback_date,
     buyback_months,
@@ -1981,6 +2721,8 @@ app.post(
     block_id,
     property_id,
     status,
+    initial_payment_amount,
+    initial_payment_date,
   } = req.body;
   if (!property_id) {
     return res.status(400).json({ error: "Property selection is required." });
@@ -2002,15 +2744,32 @@ app.post(
     return res.status(400).json({ error: "Property does not match block." });
   }
   const id = randomUUID();
+  const baseAmount = Number(amount || 0);
+  const initialPayment = Number(initial_payment_amount || 0);
+  if (initialPayment) {
+    const minFirstPayment = Math.ceil(baseAmount * 0.1);
+    if (initialPayment < minFirstPayment) {
+      return res.status(400).json({
+        error: `First payment must be at least ${minFirstPayment}.`,
+      });
+    }
+    if (initialPayment > baseAmount) {
+      return res.status(400).json({
+        error: "Initial payment exceeds investment amount.",
+      });
+    }
+  }
+  const paymentStatus = initialPayment >= baseAmount && baseAmount > 0 ? "paid" : "pending";
   await runAsync(
-    `INSERT INTO investments (id, person_id, stage, amount, area_sq_yd, date, buyback_date, buyback_months, return_percent, project_id, block_id, property_id, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO investments (id, person_id, stage, amount, area_sq_yd, actual_area_sq_yd, date, buyback_date, buyback_months, return_percent, project_id, block_id, property_id, status, payment_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       person_id,
       stage,
-      amount,
+      baseAmount,
       area_sq_yd || 0,
+      actual_area_sq_yd ?? null,
       date,
       buyback_date,
       buyback_months || 36,
@@ -2019,7 +2778,24 @@ app.post(
       block_id || null,
       property_id,
       status,
+      paymentStatus,
     ]
+  );
+  if (initialPayment) {
+    const paymentId = randomUUID();
+    await runAsync(
+      "INSERT INTO investment_payments (id, investment_id, amount, date) VALUES (?, ?, ?, ?)",
+      [
+        paymentId,
+        id,
+        initialPayment,
+        initial_payment_date || date,
+      ]
+    );
+  }
+  await runAsync(
+    "UPDATE people SET status = ? WHERE id = ?",
+    [paymentStatus === "paid" ? "active" : "pending", person_id]
   );
   await runAsync(
     "UPDATE project_properties SET status = 'sold', last_investment_id = ? WHERE id = ?",
@@ -2034,6 +2810,7 @@ app.post(
       stage,
       amount,
       area_sq_yd,
+      actual_area_sq_yd: actual_area_sq_yd ?? null,
       date,
       buyback_date,
       buyback_months,
@@ -2042,6 +2819,7 @@ app.post(
       block_id,
       property_id,
       status,
+      payment_status: paymentStatus,
     },
   });
   res.json({ id });
@@ -2052,7 +2830,14 @@ app.put(
   requireAnyPermission(["people:write", "buybacks:write"]),
   async (req, res) => {
   const { id } = req.params;
-  const { status, paid_amount, paid_date, area_sq_yd, return_percent } = req.body;
+  const {
+    status,
+    paid_amount,
+    paid_date,
+    area_sq_yd,
+    actual_area_sq_yd,
+    return_percent,
+  } = req.body;
   const current = await getAsync("SELECT * FROM investments WHERE id = ?", [id]);
   if (!current) return res.status(404).json({ error: "Not found" });
   const nextStatus = status ?? current.status;
@@ -2074,15 +2859,18 @@ app.put(
     paid_amount === undefined ? current.paid_amount : paid_amount;
   const nextAreaSqYd =
     area_sq_yd === undefined ? current.area_sq_yd : area_sq_yd;
+  const nextActualAreaSqYd =
+    actual_area_sq_yd === undefined ? current.actual_area_sq_yd : actual_area_sq_yd;
   const nextReturnPercent =
     return_percent === undefined ? current.return_percent : return_percent;
   await runAsync(
-    "UPDATE investments SET status = ?, paid_amount = ?, paid_date = ?, area_sq_yd = ?, return_percent = ? WHERE id = ?",
+    "UPDATE investments SET status = ?, paid_amount = ?, paid_date = ?, area_sq_yd = ?, actual_area_sq_yd = ?, return_percent = ? WHERE id = ?",
     [
       nextStatus,
       nextPaidAmount || null,
       nextPaidDate || null,
       nextAreaSqYd,
+      nextActualAreaSqYd ?? null,
       nextReturnPercent,
       id,
     ]
@@ -2100,6 +2888,7 @@ app.put(
       paid_amount: nextPaidAmount,
       paid_date: nextPaidDate,
       area_sq_yd: nextAreaSqYd,
+      actual_area_sq_yd: nextActualAreaSqYd ?? null,
       return_percent: nextReturnPercent,
     },
     undo_payload: current,
@@ -2138,6 +2927,14 @@ app.post("/payments", requirePermission("sales:write"), async (req, res) => {
     (acc, payment) => acc + payment.amount,
     0
   );
+  if (paidSoFar === 0) {
+    const minFirstPayment = Math.ceil(sale.total_amount * 0.1);
+    if (Number(amount) < minFirstPayment) {
+      return res.status(400).json({
+        error: `First payment must be at least ${minFirstPayment}.`,
+      });
+    }
+  }
   if (paidSoFar >= sale.total_amount) {
     return res.status(400).json({ error: "Sale is already fully paid." });
   }
@@ -2170,6 +2967,111 @@ app.post("/payments", requirePermission("sales:write"), async (req, res) => {
   await autoCancelOverdueSales();
   res.json({ id });
 });
+
+app.get(
+  "/investment-payments",
+  requireAnyPermission(["people:read", "buybacks:read"]),
+  async (req, res) => {
+    const investmentId = String(req.query.investmentId || "").trim();
+    const params = [];
+    let where = "";
+    if (investmentId) {
+      where = "WHERE investment_id = ?";
+      params.push(investmentId);
+    }
+    const rows = await allAsync(
+      `SELECT * FROM investment_payments ${where} ORDER BY date DESC`,
+      params
+    );
+    res.json(rows);
+  }
+);
+
+app.post(
+  "/investment-payments",
+  requireAnyPermission(["people:write", "buybacks:write"]),
+  async (req, res) => {
+    const { investment_id, amount, date } = req.body;
+    if (!investment_id || !amount || !date) {
+      return res.status(400).json({ error: "All payment fields are required." });
+    }
+    const investment = await getAsync(
+      "SELECT * FROM investments WHERE id = ?",
+      [investment_id]
+    );
+    if (!investment) {
+      return res.status(404).json({ error: "Investment not found." });
+    }
+    if (investment.payment_status === "cancelled") {
+      return res
+        .status(400)
+        .json({ error: "Cannot add payment to cancelled investment." });
+    }
+    if (investment.payment_status === "paid") {
+      return res
+        .status(400)
+        .json({ error: "Investment is already fully paid." });
+    }
+    const dueDate = addWorkingDays(investment.date, 15);
+    const paymentDate = new Date(date);
+    if (Number.isNaN(paymentDate.getTime())) {
+      return res.status(400).json({ error: "Invalid payment date." });
+    }
+    const existingPayments = await allAsync(
+      "SELECT amount, date FROM investment_payments WHERE investment_id = ?",
+      [investment_id]
+    );
+    const paidSoFar = existingPayments.reduce(
+      (acc, payment) => acc + payment.amount,
+      0
+    );
+    if (paidSoFar === 0) {
+      const minFirstPayment = Math.ceil(investment.amount * 0.1);
+      if (Number(amount) < minFirstPayment) {
+        return res.status(400).json({
+          error: `First payment must be at least ${minFirstPayment}.`,
+        });
+      }
+    }
+    if (paidSoFar + Number(amount) > investment.amount) {
+      return res
+        .status(400)
+        .json({ error: "Payment exceeds remaining amount." });
+    }
+    if (paymentDate > dueDate) {
+      await cancelInvestment(
+        investment,
+        paidSoFar,
+        "Payment received after 15 working days"
+      );
+      return res.status(400).json({
+        error: "Payment is beyond 15 working days. Investment cancelled.",
+      });
+    }
+    const id = randomUUID();
+    await runAsync(
+      "INSERT INTO investment_payments (id, investment_id, amount, date) VALUES (?, ?, ?, ?)",
+      [id, investment_id, amount, date]
+    );
+    await logActivity({
+      action_type: "CREATE_INVESTMENT_PAYMENT",
+      entity_type: "investment_payment",
+      entity_id: id,
+      payload: { investment_id, amount, date },
+    });
+    const newTotal = paidSoFar + Number(amount);
+    if (newTotal >= investment.amount) {
+      await runAsync(
+        "UPDATE investments SET payment_status = 'paid' WHERE id = ?",
+        [investment_id]
+      );
+      await runAsync("UPDATE people SET status = 'active' WHERE id = ?", [
+        investment.person_id,
+      ]);
+    }
+    res.json({ id });
+  }
+);
 
 app.get(
   "/commission-payments",

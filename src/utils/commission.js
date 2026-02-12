@@ -23,6 +23,20 @@ export const formatDate = (value) => {
 export const sumPayments = (payments) =>
   payments.reduce((acc, payment) => acc + payment.amount, 0);
 
+const getSalePaidAmount = (sale) => {
+  if (!sale) return 0;
+  if (typeof sale.paidAmount === "number") return sale.paidAmount;
+  if (Array.isArray(sale.payments)) return sumPayments(sale.payments);
+  return 0;
+};
+
+const isSalePaid = (sale) => {
+  if (!sale || sale.status === "cancelled") return false;
+  const total = Number(sale.totalAmount || 0);
+  if (!total) return false;
+  return getSalePaidAmount(sale) >= total;
+};
+
 export const buildPeopleIndex = (people) => {
   const index = {};
   people.forEach((person) => {
@@ -40,6 +54,7 @@ export const buildSalesIndex = (sales) => {
   const index = {};
   sales.forEach((sale) => {
     if (sale.status === "cancelled") return;
+    if (!isSalePaid(sale)) return;
     if (!index[sale.sellerId]) {
       index[sale.sellerId] = { totalArea: 0, lastSale: "-" };
     }
@@ -137,7 +152,7 @@ const getStageEvents = (personId, peopleIndex, sales) => {
     }))
     .filter((entry) => entry.date);
   const personalSales = sales
-    .filter((sale) => sale.sellerId === personId && sale.status !== "cancelled")
+    .filter((sale) => sale.sellerId === personId && isSalePaid(sale))
     .map((sale) => ({ date: sale.saleDate, type: "sale" }))
     .filter((entry) => entry.date);
   return sortByDate([...downlineEvents, ...personalSales]);
@@ -265,6 +280,7 @@ export const calculateCommissionSummary = (
   });
 
   sales.filter((sale) => sale.status !== "cancelled").forEach((sale) => {
+    if (!isSalePaid(sale)) return;
     const seller = peopleIndex[sale.sellerId];
     if (!seller) return;
     const stageSummary = getStageSummary(seller, peopleIndex, sales);
@@ -277,11 +293,13 @@ export const calculateCommissionSummary = (
 
   people.forEach((person) => {
     if (!person.sponsorId) return;
-    const investment = person.investments
-      ? [...person.investments].sort(
-          (a, b) => new Date(a.date) - new Date(b.date)
-        )[0]
-      : null;
+    if (person.isSpecial) return;
+    const paidInvestments = person.investments
+      ? person.investments.filter((inv) => inv.paymentStatus === "paid")
+      : [];
+    const investment = paidInvestments.sort(
+      (a, b) => new Date(a.date) - new Date(b.date)
+    )[0];
     const investmentArea = investment?.areaSqYd || 0;
     if (!investmentArea) return;
     const upline = buildUpline(person.id, peopleIndex, 9);

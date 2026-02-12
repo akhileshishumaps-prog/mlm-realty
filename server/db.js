@@ -36,6 +36,16 @@ export const initDb = (db) => {
         console.error("Failed to add sponsor_stage column", err);
       }
     });
+    db.run("ALTER TABLE people ADD COLUMN status TEXT", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add people status column", err);
+      }
+    });
+    db.run("ALTER TABLE people ADD COLUMN is_special INTEGER", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add people is_special column", err);
+      }
+    });
     db.run("ALTER TABLE investments ADD COLUMN paid_amount INTEGER", (err) => {
       if (err && !err.message.includes("duplicate column")) {
         console.error("Failed to add paid_amount column", err);
@@ -51,6 +61,11 @@ export const initDb = (db) => {
         console.error("Failed to add area_sq_yd column", err);
       }
     });
+    db.run("ALTER TABLE investments ADD COLUMN actual_area_sq_yd REAL", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add actual_area_sq_yd column", err);
+      }
+    });
     db.run("ALTER TABLE investments ADD COLUMN buyback_months INTEGER", (err) => {
       if (err && !err.message.includes("duplicate column")) {
         console.error("Failed to add buyback_months column", err);
@@ -59,6 +74,16 @@ export const initDb = (db) => {
     db.run("ALTER TABLE investments ADD COLUMN return_percent INTEGER", (err) => {
       if (err && !err.message.includes("duplicate column")) {
         console.error("Failed to add return_percent column", err);
+      }
+    });
+    db.run("ALTER TABLE investments ADD COLUMN payment_status TEXT", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add investment payment_status column", err);
+      }
+    });
+    db.run("ALTER TABLE investments ADD COLUMN cancelled_at TEXT", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add investment cancelled_at column", err);
       }
     });
     db.run("ALTER TABLE investments ADD COLUMN project_id TEXT", (err) => {
@@ -84,6 +109,51 @@ export const initDb = (db) => {
     db.run("ALTER TABLE sales ADD COLUMN cancelled_at TEXT", (err) => {
       if (err && !err.message.includes("duplicate column")) {
         console.error("Failed to add cancelled_at column", err);
+      }
+    });
+    db.run("ALTER TABLE sales ADD COLUMN actual_area_sq_yd REAL", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add sales actual_area_sq_yd column", err);
+      }
+    });
+    db.run("ALTER TABLE sales ADD COLUMN customer_id TEXT", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add sales customer_id column", err);
+      }
+    });
+    db.run("ALTER TABLE sales ADD COLUMN buyback_enabled INTEGER", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add sales buyback_enabled column", err);
+      }
+    });
+    db.run("ALTER TABLE sales ADD COLUMN buyback_months INTEGER", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add sales buyback_months column", err);
+      }
+    });
+    db.run("ALTER TABLE sales ADD COLUMN buyback_return_percent INTEGER", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add sales buyback_return_percent column", err);
+      }
+    });
+    db.run("ALTER TABLE sales ADD COLUMN buyback_date TEXT", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add sales buyback_date column", err);
+      }
+    });
+    db.run("ALTER TABLE sales ADD COLUMN buyback_status TEXT", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add sales buyback_status column", err);
+      }
+    });
+    db.run("ALTER TABLE sales ADD COLUMN buyback_paid_amount INTEGER", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add sales buyback_paid_amount column", err);
+      }
+    });
+    db.run("ALTER TABLE sales ADD COLUMN buyback_paid_date TEXT", (err) => {
+      if (err && !err.message.includes("duplicate column")) {
+        console.error("Failed to add sales buyback_paid_date column", err);
       }
     });
     db.run("ALTER TABLE sales ADD COLUMN project_id TEXT", (err) => {
@@ -149,6 +219,34 @@ export const initDb = (db) => {
       (err) => {
         if (err) {
           console.error("Failed to create project_properties table", err);
+        }
+      }
+    );
+    db.run(
+      `CREATE TABLE IF NOT EXISTS investment_payments (
+        id TEXT PRIMARY KEY,
+        investment_id TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        FOREIGN KEY (investment_id) REFERENCES investments(id)
+      )`,
+      (err) => {
+        if (err) {
+          console.error("Failed to create investment_payments table", err);
+        }
+      }
+    );
+    db.run(
+      `CREATE TABLE IF NOT EXISTS customers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL UNIQUE,
+        address TEXT,
+        created_at TEXT NOT NULL
+      )`,
+      (err) => {
+        if (err) {
+          console.error("Failed to create customers table", err);
         }
       }
     );
@@ -246,6 +344,22 @@ export const initDb = (db) => {
       }
     });
     db.run(
+      "UPDATE people SET status = 'active' WHERE status IS NULL",
+      (err) => {
+        if (err) {
+          console.error("Failed to backfill people status", err);
+        }
+      }
+    );
+    db.run(
+      "UPDATE people SET is_special = 0 WHERE is_special IS NULL",
+      (err) => {
+        if (err) {
+          console.error("Failed to backfill people is_special", err);
+        }
+      }
+    );
+    db.run(
       "UPDATE people SET sponsor_stage = 1 WHERE sponsor_stage IS NULL AND sponsor_id IS NOT NULL",
       (err) => {
         if (err) {
@@ -258,6 +372,30 @@ export const initDb = (db) => {
       (err) => {
         if (err) {
           console.error("Failed to backfill return_percent", err);
+        }
+      }
+    );
+    db.run(
+      "UPDATE investments SET payment_status = 'pending' WHERE payment_status IS NULL",
+      (err) => {
+        if (err) {
+          console.error("Failed to backfill investment payment_status", err);
+        }
+      }
+    );
+    db.run(
+      "UPDATE sales SET buyback_enabled = 0 WHERE buyback_enabled IS NULL",
+      (err) => {
+        if (err) {
+          console.error("Failed to backfill sales buyback_enabled", err);
+        }
+      }
+    );
+    db.run(
+      "UPDATE sales SET buyback_status = 'pending' WHERE buyback_status IS NULL",
+      (err) => {
+        if (err) {
+          console.error("Failed to backfill sales buyback_status", err);
         }
       }
     );
@@ -351,6 +489,12 @@ export const initDb = (db) => {
       }
     );
     db.run(
+      "CREATE INDEX IF NOT EXISTS idx_investments_payment_status ON investments(payment_status)",
+      (err) => {
+        if (err) console.error("Failed to create idx_investments_payment_status", err);
+      }
+    );
+    db.run(
       "CREATE INDEX IF NOT EXISTS idx_investments_date ON investments(date)",
       (err) => {
         if (err) console.error("Failed to create idx_investments_date", err);
@@ -408,6 +552,18 @@ export const initDb = (db) => {
       "CREATE INDEX IF NOT EXISTS idx_project_props_status ON project_properties(status)",
       (err) => {
         if (err) console.error("Failed to create idx_project_props_status", err);
+      }
+    );
+    db.run(
+      "CREATE INDEX IF NOT EXISTS idx_investment_payments_investment ON investment_payments(investment_id)",
+      (err) => {
+        if (err) console.error("Failed to create idx_investment_payments_investment", err);
+      }
+    );
+    db.run(
+      "CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)",
+      (err) => {
+        if (err) console.error("Failed to create idx_customers_phone", err);
       }
     );
   });

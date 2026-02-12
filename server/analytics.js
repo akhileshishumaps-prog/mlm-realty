@@ -3,6 +3,22 @@ const STAGE_THRESHOLDS = [18, 72, 288, 1152, 4608, 9216, 18432];
 const sortByDate = (items) =>
   [...items].sort((a, b) => new Date(a.date) - new Date(b.date));
 
+const getSalePaidAmount = (sale) => {
+  if (!sale) return 0;
+  if (typeof sale.paidAmount === "number") return sale.paidAmount;
+  if (Array.isArray(sale.payments)) {
+    return sale.payments.reduce((acc, payment) => acc + payment.amount, 0);
+  }
+  return 0;
+};
+
+const isSalePaid = (sale) => {
+  if (!sale || sale.status === "cancelled") return false;
+  const total = Number(sale.totalAmount || 0);
+  if (!total) return false;
+  return getSalePaidAmount(sale) >= total;
+};
+
 const normalizeConfigHistory = (history, fallback) => {
   const safeFallback = fallback || {
     levelRates: [],
@@ -96,7 +112,12 @@ const getStageEvents = (personId, peopleIndex, sales) => {
     }))
     .filter((entry) => entry.date);
   const personalSales = sales
-    .filter((sale) => sale.sellerId === personId && sale.status !== "cancelled")
+    .filter(
+      (sale) =>
+        sale.sellerId === personId &&
+        sale.status !== "cancelled" &&
+        isSalePaid(sale)
+    )
     .map((sale) => ({ date: sale.saleDate, type: "sale" }))
     .filter((entry) => entry.date);
   return sortByDate([...downlineEvents, ...personalSales]);
@@ -218,6 +239,7 @@ export const calculateCommissionSummary = (
   });
 
   sales.filter((sale) => sale.status !== "cancelled").forEach((sale) => {
+    if (!isSalePaid(sale)) return;
     const seller = peopleIndex[sale.sellerId];
     if (!seller) return;
     const stageSummary = getStageSummary(seller, peopleIndex, sales);
@@ -230,11 +252,15 @@ export const calculateCommissionSummary = (
 
   people.forEach((person) => {
     if (!person.sponsorId) return;
-    const investment = person.investments
-      ? [...person.investments].sort(
-          (a, b) => new Date(a.date) - new Date(b.date)
-        )[0]
-      : null;
+    if (person.isSpecial) return;
+    const paidInvestments = person.investments
+      ? person.investments.filter(
+          (inv) => inv.paymentStatus === "paid"
+        )
+      : [];
+    const investment = paidInvestments.sort(
+      (a, b) => new Date(a.date) - new Date(b.date)
+    )[0];
     const investmentArea = investment?.areaSqYd || 0;
     if (!investmentArea) return;
     const upline = buildUpline(person.id, peopleIndex, 9);
@@ -273,6 +299,7 @@ export const toPeopleModel = (peopleRows, investmentsRows) => {
       stage: inv.stage,
       amount: inv.amount,
       areaSqYd: inv.area_sq_yd ?? 0,
+      actualAreaSqYd: inv.actual_area_sq_yd ?? null,
       date: inv.date,
       buybackDate: inv.buyback_date,
       buybackMonths: inv.buyback_months ?? 36,
@@ -281,6 +308,8 @@ export const toPeopleModel = (peopleRows, investmentsRows) => {
       blockId: inv.block_id || "",
       propertyId: inv.property_id || "",
       status: inv.status,
+      paymentStatus: inv.payment_status || "pending",
+      cancelledAt: inv.cancelled_at || null,
       paidAmount: inv.paid_amount,
       paidDate: inv.paid_date,
       id: inv.id,
@@ -293,6 +322,8 @@ export const toPeopleModel = (peopleRows, investmentsRows) => {
     sponsorId: person.sponsor_id,
     sponsorStage: person.sponsor_stage ?? (person.sponsor_id ? 1 : null),
     joinDate: person.join_date,
+    status: person.status || "active",
+    isSpecial: Number(person.is_special || 0) === 1,
     investments: investmentsByPerson[person.id] || [],
   }));
 };
@@ -303,6 +334,7 @@ export const toSalesModel = (salesRows) =>
     sellerId: sale.seller_id,
     propertyName: sale.property_name,
     areaSqYd: sale.area_sq_yd,
+    actualAreaSqYd: sale.actual_area_sq_yd ?? null,
     totalAmount: sale.total_amount,
     saleDate: sale.sale_date,
     status: sale.status || "active",
@@ -310,4 +342,16 @@ export const toSalesModel = (salesRows) =>
     projectId: sale.project_id || "",
     blockId: sale.block_id || "",
     propertyId: sale.property_id || "",
+    customerId: sale.customer_id || "",
+    paidAmount:
+      sale.paid_amount !== undefined && sale.paid_amount !== null
+        ? Number(sale.paid_amount)
+        : undefined,
+    buybackEnabled: Number(sale.buyback_enabled || 0) === 1,
+    buybackMonths: sale.buyback_months ?? null,
+    buybackReturnPercent: sale.buyback_return_percent ?? null,
+    buybackDate: sale.buyback_date || null,
+    buybackStatus: sale.buyback_status || "pending",
+    buybackPaidAmount: sale.buyback_paid_amount ?? null,
+    buybackPaidDate: sale.buyback_paid_date || null,
   }));

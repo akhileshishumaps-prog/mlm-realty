@@ -137,6 +137,21 @@ export const fetchSalesSummary = async (params = {}) => {
   return handleResponse(await apiFetch(path));
 };
 
+export const fetchCustomers = async (params = {}) => {
+  const query = buildQuery(params);
+  const path = query ? `/customers?${query}` : "/customers";
+  return handleResponse(await apiFetch(path));
+};
+
+export const fetchCustomerDetail = async (id) =>
+  handleResponse(await apiFetch(`/customers/${id}`));
+
+export const fetchInvestmentPayments = async (params = {}) => {
+  const query = buildQuery(params);
+  const path = query ? `/investment-payments?${query}` : "/investment-payments";
+  return handleResponse(await apiFetch(path));
+};
+
 export const fetchCommissionSummary = async (params = {}) => {
   const query = buildQuery(params);
   const path = query
@@ -288,6 +303,24 @@ export const fetchSaleDetail = async (id) =>
 export const createPayment = async (payload) =>
   handleResponse(
     await apiFetch("/payments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+  );
+
+export const createInvestmentPayment = async (payload) =>
+  handleResponse(
+    await apiFetch("/investment-payments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+  );
+
+export const updateSaleBuyback = async (id, payload) =>
+  handleResponse(
+    await apiFetch(`/sales/${id}/buyback`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
