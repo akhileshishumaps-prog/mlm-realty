@@ -393,12 +393,15 @@ function App() {
     [configEditing, triggerConfigShake]
   );
 
-  const hasPermission = (perm) => {
-    if (!authUser) return false;
-    const perms = authUser.permissions || [];
-    if (perms.includes("*")) return true;
-    return perms.includes(perm);
-  };
+  const hasPermission = useCallback(
+    (perm) => {
+      if (!authUser) return false;
+      const perms = authUser.permissions || [];
+      if (perms.includes("*")) return true;
+      return perms.includes(perm);
+    },
+    [authUser]
+  );
 
   const canSeeCommission = hasPermission("commissions:read");
   const renderCommission = (value) =>
@@ -479,23 +482,37 @@ function App() {
     setShowPropertyDetailModal(true);
   };
 
-  const loadProjectDetailProperties = async (projectId) => {
-    if (!projectId) return;
-    setProjectDetailLoading(true);
-    setProjectDetailError("");
-    try {
-      const data = await fetchProjectProperties(projectId, { status: "all" });
-      const props = data.properties || [];
-      setProjectDetailProperties(props);
-      mergeProperties(props);
-    } catch (err) {
-      console.error(err);
-      setProjectDetailProperties([]);
-      setProjectDetailError("Unable to load project properties.");
-    } finally {
-      setProjectDetailLoading(false);
-    }
-  };
+  const mergeProperties = useCallback((incoming) => {
+    if (!incoming?.length) return;
+    setProjectProperties((prev) => {
+      const map = new Map(prev.map((prop) => [prop.id, prop]));
+      incoming.forEach((prop) => {
+        map.set(prop.id, prop);
+      });
+      return Array.from(map.values());
+    });
+  }, []);
+
+  const loadProjectDetailProperties = useCallback(
+    async (projectId) => {
+      if (!projectId) return;
+      setProjectDetailLoading(true);
+      setProjectDetailError("");
+      try {
+        const data = await fetchProjectProperties(projectId, { status: "all" });
+        const props = data.properties || [];
+        setProjectDetailProperties(props);
+        mergeProperties(props);
+      } catch (err) {
+        console.error(err);
+        setProjectDetailProperties([]);
+        setProjectDetailError("Unable to load project properties.");
+      } finally {
+        setProjectDetailLoading(false);
+      }
+    },
+    [mergeProperties]
+  );
 
   const openProjectDetail = (projectId) => {
     if (!projectId) return;
@@ -529,76 +546,67 @@ function App() {
     go();
   };
 
-  const mergeProperties = (incoming) => {
-    if (!incoming?.length) return;
-    setProjectProperties((prev) => {
-      const map = new Map(prev.map((prop) => [prop.id, prop]));
-      incoming.forEach((prop) => {
-        map.set(prop.id, prop);
-      });
-      return Array.from(map.values());
-    });
-  };
-
-  const ensureProjectProperties = async (
-    projectId,
-    status = "all",
-    force = false
-  ) => {
-    if (!projectId) return;
-    const hasProps = projectProperties.some(
-      (prop) => prop.project_id === projectId
-    );
-    const needsEnrichment = projectProperties.some(
-      (prop) =>
-        prop.project_id === projectId &&
-        ((prop.last_investment_id &&
-          !prop.last_investment_person_name &&
-          !prop.last_investment_person_id) ||
-          (prop.last_sale_id &&
-            !prop.last_sale_seller_name &&
-            !prop.last_sale_seller_id))
-    );
-    if (
-      !force &&
-      loadedProjectIds.includes(projectId) &&
-      status === "all" &&
-      hasProps &&
-      !needsEnrichment
-    ) {
-      return;
-    }
-    try {
-      const data = await fetchProjectProperties(projectId, { status });
-      mergeProperties(data.properties || []);
-      if (status === "all") {
-        setLoadedProjectIds((prev) =>
-          prev.includes(projectId) ? prev : [...prev, projectId]
-        );
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const ensureBlockProperties = async (blockId, status = "available") => {
-    if (!blockId) return;
-    const hasProps = projectProperties.some(
-      (prop) => prop.block_id === blockId
-    );
-    if (loadedBlockIds.includes(`${blockId}:${status}`) && hasProps) return;
-    try {
-      const data = await fetchBlockProperties(blockId, { status });
-      mergeProperties(data.properties || []);
-      setLoadedBlockIds((prev) =>
-        prev.includes(`${blockId}:${status}`)
-          ? prev
-          : [...prev, `${blockId}:${status}`]
+  const ensureProjectProperties = useCallback(
+    async (projectId, status = "all", force = false) => {
+      if (!projectId) return;
+      const hasProps = projectProperties.some(
+        (prop) => prop.project_id === projectId
       );
-    } catch (err) {
-      console.error(err);
-    }
-  };
+      const needsEnrichment = projectProperties.some(
+        (prop) =>
+          prop.project_id === projectId &&
+          ((prop.last_investment_id &&
+            !prop.last_investment_person_name &&
+            !prop.last_investment_person_id) ||
+            (prop.last_sale_id &&
+              !prop.last_sale_seller_name &&
+              !prop.last_sale_seller_id))
+      );
+      if (
+        !force &&
+        loadedProjectIds.includes(projectId) &&
+        status === "all" &&
+        hasProps &&
+        !needsEnrichment
+      ) {
+        return;
+      }
+      try {
+        const data = await fetchProjectProperties(projectId, { status });
+        mergeProperties(data.properties || []);
+        if (status === "all") {
+          setLoadedProjectIds((prev) =>
+            prev.includes(projectId) ? prev : [...prev, projectId]
+          );
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    },
+    [projectProperties, loadedProjectIds, mergeProperties]
+  );
+
+  const ensureBlockProperties = useCallback(
+    async (blockId, status = "available") => {
+      if (!blockId) return;
+      const hasProps = projectProperties.some(
+        (prop) => prop.block_id === blockId
+      );
+      if (loadedBlockIds.includes(`${blockId}:${status}`) && hasProps) return;
+      try {
+        const data = await fetchBlockProperties(blockId, { status });
+        mergeProperties(data.properties || []);
+        setLoadedBlockIds((prev) =>
+          prev.includes(`${blockId}:${status}`)
+            ? prev
+            : [...prev, `${blockId}:${status}`]
+        );
+      } catch (err) {
+        console.error(err);
+      }
+    },
+    [projectProperties, loadedBlockIds, mergeProperties]
+  );
 
   const getMonthKey = (date) =>
     `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
@@ -1148,7 +1156,7 @@ function App() {
   const [commissionBalance, setCommissionBalance] = useState(null);
 
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!authUser) return;
     setLoadingFullData(true);
     setLoading(true);
@@ -1203,24 +1211,24 @@ function App() {
       const investmentData = data.investments || [];
       const investmentsByPerson = investmentData.reduce((acc, inv) => {
         acc[inv.person_id] = acc[inv.person_id] || [];
-          acc[inv.person_id].push({
-            stage: inv.stage,
-            amount: inv.amount,
-              areaSqYd: inv.area_sq_yd ?? 0,
-              date: inv.date,
-              buybackDate: inv.buyback_date,
-              buybackMonths: inv.buyback_months ?? 36,
-              returnPercent: inv.return_percent ?? 200,
-              projectId: inv.project_id || "",
-              blockId: inv.block_id || "",
-              propertyId: inv.property_id || "",
-              status: inv.status,
-              paidAmount: inv.paid_amount,
-              paidDate: inv.paid_date,
-              id: inv.id,
-            });
-          return acc;
-        }, {});
+        acc[inv.person_id].push({
+          stage: inv.stage,
+          amount: inv.amount,
+          areaSqYd: inv.area_sq_yd ?? 0,
+          date: inv.date,
+          buybackDate: inv.buyback_date,
+          buybackMonths: inv.buyback_months ?? 36,
+          returnPercent: inv.return_percent ?? 200,
+          projectId: inv.project_id || "",
+          blockId: inv.block_id || "",
+          propertyId: inv.property_id || "",
+          status: inv.status,
+          paidAmount: inv.paid_amount,
+          paidDate: inv.paid_date,
+          id: inv.id,
+        });
+        return acc;
+      }, {});
 
       const peopleData = data.people || [];
       const peopleWithInvestments = peopleData.map((person) => ({
@@ -1314,9 +1322,9 @@ function App() {
       setLoading(false);
       setLoadingFullData(false);
     }
-  };
+  }, [authUser, hasPermission, handleLogout]);
 
-  const loadInitialData = async () => {
+  const loadInitialData = useCallback(async () => {
     if (!authUser) return;
     setFullDataLoaded(false);
     setLoadedProjectIds([]);
@@ -1392,7 +1400,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [authUser, hasPermission]);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -1417,7 +1425,7 @@ function App() {
     if (authUser) {
       loadInitialData();
     }
-  }, [authUser]);
+  }, [authUser, loadInitialData]);
 
   const refreshActivityLogs = useCallback(async () => {
     if (!authUser || !hasPermission("activity:read")) return;
@@ -1448,6 +1456,7 @@ function App() {
     activityStatusFilter,
     activityDateFrom,
     activityDateTo,
+    hasPermission,
   ]);
 
   useEffect(() => {
@@ -1470,6 +1479,7 @@ function App() {
     activityDateFrom,
     activityDateTo,
     refreshActivityLogs,
+    hasPermission,
   ]);
 
   useEffect(() => {
@@ -1492,7 +1502,7 @@ function App() {
       }
     };
     loadUsersPage();
-  }, [authUser, activeView, usersPage]);
+  }, [authUser, activeView, usersPage, hasPermission]);
 
   useEffect(() => {
     if (
@@ -1519,7 +1529,7 @@ function App() {
       }
     };
     loadPeoplePage();
-  }, [authUser, activeView, peoplePage, peopleSearch, peopleSort]);
+  }, [authUser, activeView, peoplePage, peopleSearch, peopleSort, hasPermission]);
 
   useEffect(() => {
     if (
@@ -1572,6 +1582,7 @@ function App() {
     salesSearch,
     salesSort,
     salesView,
+    hasPermission,
   ]);
 
   useEffect(() => {
@@ -1609,6 +1620,7 @@ function App() {
     commissionStageFilter,
     commissionBalanceFilter,
     commissionMinEarned,
+    hasPermission,
   ]);
 
   useEffect(() => {
@@ -1647,18 +1659,18 @@ function App() {
   useEffect(() => {
     if (!personForm.blockId) return;
     ensureBlockProperties(personForm.blockId, "available");
-  }, [personForm.blockId]);
+  }, [personForm.blockId, ensureBlockProperties]);
 
   useEffect(() => {
     if (!saleForm.blockId) return;
     const status = editingSaleId ? "all" : "available";
     ensureBlockProperties(saleForm.blockId, status);
-  }, [saleForm.blockId, editingSaleId]);
+  }, [saleForm.blockId, editingSaleId, ensureBlockProperties]);
 
   useEffect(() => {
     if (!showProjectDetailModal || !selectedProjectId) return;
     loadProjectDetailProperties(selectedProjectId);
-  }, [showProjectDetailModal, selectedProjectId]);
+  }, [showProjectDetailModal, selectedProjectId, loadProjectDetailProperties]);
 
   useEffect(() => {
     if (!authUser || fullDataLoaded || loadingFullData) return;
@@ -1666,7 +1678,7 @@ function App() {
     if (heavyViews.has(activeView)) {
       loadData();
     }
-  }, [authUser, activeView, fullDataLoaded, loadingFullData]);
+  }, [authUser, activeView, fullDataLoaded, loadingFullData, loadData]);
 
   const peopleIndex = useMemo(() => buildPeopleIndex(people), [people]);
   const salesIndex = useMemo(() => buildSalesIndex(sales), [sales]);
@@ -1699,18 +1711,26 @@ function App() {
     return map;
   }, [employees]);
 
-  const blocksForProject = (projectId) =>
-    projectBlocks.filter((block) => block.project_id === projectId);
+  const blocksForProject = useCallback(
+    (projectId) => projectBlocks.filter((block) => block.project_id === projectId),
+    [projectBlocks]
+  );
 
-  const propertiesForProject = (projectId) =>
-    projectProperties.filter((prop) => prop.project_id === projectId);
+  const propertiesForProject = useCallback(
+    (projectId) =>
+      projectProperties.filter((prop) => prop.project_id === projectId),
+    [projectProperties]
+  );
 
-  const propertiesForBlock = (blockId, includeId = null) =>
-    projectProperties.filter((prop) => {
-      if (prop.block_id !== blockId) return false;
-      if (!prop.status || prop.status === "available") return true;
-      return includeId && prop.id === includeId;
-    });
+  const propertiesForBlock = useCallback(
+    (blockId, includeId = null) =>
+      projectProperties.filter((prop) => {
+        if (prop.block_id !== blockId) return false;
+        if (!prop.status || prop.status === "available") return true;
+        return includeId && prop.id === includeId;
+      }),
+    [projectProperties]
+  );
   const salesById = useMemo(() => {
     const map = {};
     sales.forEach((sale) => {
@@ -1775,7 +1795,7 @@ function App() {
       };
     });
     return stats;
-  }, [projects, projectProperties]);
+  }, [projects, projectProperties, propertiesForProject]);
   const commissionSummary = useMemo(
     () =>
       calculateCommissionSummary(
@@ -2343,36 +2363,6 @@ function App() {
     );
   }, [people, peopleSearch]);
 
-  const sortedPeopleTable = useMemo(() => {
-    const list = [...filteredPeopleTable];
-    if (peopleSort === "alpha") {
-      list.sort((a, b) => a.name.localeCompare(b.name));
-    } else if (peopleSort === "commission") {
-      list.sort(
-        (a, b) =>
-          (commissionSummary.byPerson[b.id]?.totalCommission || 0) -
-          (commissionSummary.byPerson[a.id]?.totalCommission || 0)
-      );
-    } else if (peopleSort === "stage") {
-      list.sort(
-        (a, b) =>
-          getStageSummary(b, peopleIndex, sales).stage -
-            getStageSummary(a, peopleIndex, sales).stage ||
-          b.joinDate.localeCompare(a.joinDate)
-      );
-    } else if (peopleSort === "recruits") {
-      list.sort(
-        (a, b) =>
-          peopleIndex[b.id]?.directRecruits.length -
-            peopleIndex[a.id]?.directRecruits.length ||
-          b.joinDate.localeCompare(a.joinDate)
-      );
-    } else {
-      list.sort((a, b) => b.joinDate.localeCompare(a.joinDate));
-    }
-    return list;
-  }, [filteredPeopleTable, peopleSort, commissionSummary, peopleIndex, sales]);
-
   const salesBase = useMemo(() => {
     return salesView === "cancelled"
       ? sales.filter((sale) => sale.status === "cancelled")
@@ -2404,19 +2394,9 @@ function App() {
     projectsById,
     blocksById,
     propertiesById,
+    getSaleProjectName,
+    getSaleBlockName,
   ]);
-
-  const sortedSalesTable = useMemo(() => {
-    const list = [...filteredSalesTable];
-    if (salesSort === "alpha") {
-      list.sort((a, b) =>
-        getSaleProjectName(a).localeCompare(getSaleProjectName(b))
-      );
-    } else {
-      list.sort((a, b) => b.saleDate.localeCompare(a.saleDate));
-    }
-    return list;
-  }, [filteredSalesTable, salesSort, projectsById]);
 
   const pagedPeopleTable = useMemo(
     () => peopleTableRows,
@@ -2526,39 +2506,6 @@ function App() {
     Math.ceil(filteredBuybacks.length / 10)
   );
 
-  const filteredCommissionRows = useMemo(() => {
-    let rows = commissionSummary.peopleRows;
-    if (commissionSearch) {
-      const term = commissionSearch.toLowerCase();
-      rows = rows.filter((row) =>
-        row.person.name.toLowerCase().includes(term)
-      );
-    }
-    if (commissionStageFilter !== "all") {
-      rows = rows.filter(
-        (row) => row.stage === Number(commissionStageFilter)
-      );
-    }
-    if (commissionBalanceFilter === "due") {
-      rows = rows.filter((row) => row.totalCommission - row.totalPaid > 0);
-    }
-    if (commissionBalanceFilter === "paid") {
-      rows = rows.filter((row) => row.totalCommission - row.totalPaid <= 0);
-    }
-    if (commissionMinEarned) {
-      rows = rows.filter(
-        (row) => row.totalCommission >= Number(commissionMinEarned)
-      );
-    }
-    return rows;
-  }, [
-    commissionSummary.peopleRows,
-    commissionSearch,
-    commissionStageFilter,
-    commissionBalanceFilter,
-    commissionMinEarned,
-  ]);
-
   useEffect(() => {
     setCommissionPage(1);
   }, [
@@ -2586,17 +2533,23 @@ function App() {
     );
   }, [people, profileSearch]);
 
-  const getSaleProjectName = (sale) => {
-    if (!sale) return "";
-    return sale.projectId
-      ? projectsById[sale.projectId]?.name || ""
-      : sale.propertyName || "";
-  };
+  const getSaleProjectName = useCallback(
+    (sale) => {
+      if (!sale) return "";
+      return sale.projectId
+        ? projectsById[sale.projectId]?.name || ""
+        : sale.propertyName || "";
+    },
+    [projectsById]
+  );
 
-  const getSaleBlockName = (sale) => {
-    if (!sale) return "";
-    return sale.blockId ? blocksById[sale.blockId]?.name || "" : "";
-  };
+  const getSaleBlockName = useCallback(
+    (sale) => {
+      if (!sale) return "";
+      return sale.blockId ? blocksById[sale.blockId]?.name || "" : "";
+    },
+    [blocksById]
+  );
 
   const resolveSaleLocation = (projectId, fallback = "") => {
     const project = projectsById[projectId];
@@ -2608,12 +2561,6 @@ function App() {
       project.pincode,
     ].filter(Boolean);
     return parts.join(", ");
-  };
-
-  const addYears = (dateStr, years) => {
-    const date = new Date(dateStr);
-    date.setFullYear(date.getFullYear() + years);
-    return date.toISOString().split("T")[0];
   };
 
   const addMonths = (dateStr, months) => {
