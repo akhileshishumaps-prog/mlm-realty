@@ -8,13 +8,6 @@ import path from "path";
 import { openDb, initDb } from "./db.js";
 import { randomUUID, randomBytes, scryptSync, timingSafeEqual, createHmac } from "crypto";
 import {
-  seedCommissionPayments,
-  seedInvestments,
-  seedPayments,
-  seedPeople,
-  seedSales,
-} from "./seedData.js";
-import {
   calculateCommissionSummary,
   buildPeopleIndex,
   getStageSummary,
@@ -27,6 +20,10 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 app.disable("x-powered-by");
+
+if (process.env.NODE_ENV === "production" && !process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL is required in production.");
+}
 
 const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:3000")
   .split(",")
@@ -85,7 +82,7 @@ const ensurePincodeSeeded = async () => {
   pincodeSeedPromise = (async () => {
     try {
       const existing = await getAsync("SELECT COUNT(1) AS count FROM pincodes");
-      if (existing?.count > 0) return;
+      if (Number(existing?.count || 0) > 0) return;
       if (!fs.existsSync(PINCODE_DATA_PATH)) {
         console.warn("Pincode data file not found:", PINCODE_DATA_PATH);
         return;
@@ -93,33 +90,66 @@ const ensurePincodeSeeded = async () => {
       const raw = fs.readFileSync(PINCODE_DATA_PATH, "utf8");
       const data = JSON.parse(raw);
       if (!Array.isArray(data) || !data.length) return;
-      await runAsync("BEGIN TRANSACTION");
-      const stmt = db.prepare(
-        "INSERT INTO pincodes (pincode, office_name, district, state, state_key, name_key, district_key) VALUES (?, ?, ?, ?, ?, ?, ?)"
-      );
-      for (const entry of data) {
-        if (!entry || !entry.stateName || !entry.pincode) continue;
-        const stateKey = normalizeKey(entry.stateName);
-        if (!stateKey) continue;
-        stmt.run(
-          String(entry.pincode),
-          entry.officeName || "",
-          entry.districtName || "",
-          titleCase(entry.stateName),
-          stateKey,
-          normalizeKey(entry.officeName || ""),
-          normalizeKey(entry.districtName || "")
+      const insertSql =
+        "INSERT INTO pincodes (pincode, office_name, district, state, state_key, name_key, district_key) VALUES (?, ?, ?, ?, ?, ?, ?)";
+      if (isPostgres) {
+        const client = await db.pool.connect();
+        try {
+          await client.query("BEGIN");
+          for (const entry of data) {
+            if (!entry || !entry.stateName || !entry.pincode) continue;
+            const stateKey = normalizeKey(entry.stateName);
+            if (!stateKey) continue;
+            await client.query(replacePlaceholders(insertSql), [
+              String(entry.pincode),
+              entry.officeName || "",
+              entry.districtName || "",
+              titleCase(entry.stateName),
+              stateKey,
+              normalizeKey(entry.officeName || ""),
+              normalizeKey(entry.districtName || ""),
+            ]);
+          }
+          await client.query("COMMIT");
+        } catch (err) {
+          try {
+            await client.query("ROLLBACK");
+          } catch (rollbackErr) {
+            console.error("Failed to rollback pincode seed", rollbackErr);
+          }
+          throw err;
+        } finally {
+          client.release();
+        }
+      } else {
+        await runAsync("BEGIN TRANSACTION");
+        const stmt = db.sqlite.prepare(insertSql);
+        for (const entry of data) {
+          if (!entry || !entry.stateName || !entry.pincode) continue;
+          const stateKey = normalizeKey(entry.stateName);
+          if (!stateKey) continue;
+          stmt.run(
+            String(entry.pincode),
+            entry.officeName || "",
+            entry.districtName || "",
+            titleCase(entry.stateName),
+            stateKey,
+            normalizeKey(entry.officeName || ""),
+            normalizeKey(entry.districtName || "")
+          );
+        }
+        await new Promise((resolve, reject) =>
+          stmt.finalize((err) => (err ? reject(err) : resolve()))
         );
+        await runAsync("COMMIT");
       }
-      await new Promise((resolve, reject) =>
-        stmt.finalize((err) => (err ? reject(err) : resolve()))
-      );
-      await runAsync("COMMIT");
       console.log("Seeded pincodes table.");
     } catch (err) {
       console.error("Failed to seed pincodes table", err);
       try {
-        await runAsync("ROLLBACK");
+        if (!isPostgres) {
+          await runAsync("ROLLBACK");
+        }
       } catch (rollbackErr) {
         console.error("Failed to rollback pincode seed", rollbackErr);
       }
@@ -174,31 +204,52 @@ app.use((req, res, next) => {
 });
 
 const db = openDb();
-initDb(db);
+await initDb(db);
+const isPostgres = db.mode === "postgres";
 
-const runAsync = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.run(sql, params, function onRun(err) {
+const replacePlaceholders = (sql) => {
+  if (!isPostgres) return sql;
+  let index = 0;
+  return sql.replace(/\?/g, () => `$${++index}`);
+};
+
+const runAsync = (sql, params = []) => {
+  if (isPostgres) {
+    return db.pool.query(replacePlaceholders(sql), params);
+  }
+  return new Promise((resolve, reject) => {
+    db.sqlite.run(sql, params, function onRun(err) {
       if (err) return reject(err);
       resolve(this);
     });
   });
+};
 
-const allAsync = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
+const allAsync = async (sql, params = []) => {
+  if (isPostgres) {
+    const result = await db.pool.query(replacePlaceholders(sql), params);
+    return result.rows;
+  }
+  return new Promise((resolve, reject) => {
+    db.sqlite.all(sql, params, (err, rows) => {
       if (err) return reject(err);
       resolve(rows);
     });
   });
+};
 
-const getAsync = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
+const getAsync = async (sql, params = []) => {
+  if (isPostgres) {
+    const result = await db.pool.query(replacePlaceholders(sql), params);
+    return result.rows[0];
+  }
+  return new Promise((resolve, reject) => {
+    db.sqlite.get(sql, params, (err, row) => {
       if (err) return reject(err);
       resolve(row);
     });
   });
+};
 
 const buildSalesWithPayments = async (salesRows) => {
   if (!salesRows.length) return [];
@@ -261,9 +312,9 @@ if (process.env.NODE_ENV === "production" && !process.env.APP_SECRET) {
 const TOKEN_SECRET = process.env.APP_SECRET || "mlm-secret-change-me";
 const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
 const DEFAULT_OWNER = {
-  username: "owner",
-  password: "Owner@12345",
-  role: "Owner",
+  username: process.env.ADMIN_USERNAME || "",
+  password: process.env.ADMIN_PASSWORD || "",
+  role: process.env.ADMIN_ROLE || "Owner",
   permissions: ["*"],
 };
 
@@ -328,7 +379,18 @@ const hasPermission = (user, permission) => {
 
 const ensureDefaultOwner = async () => {
   const row = await getAsync("SELECT COUNT(*) as count FROM users");
-  if (row && row.count > 0) return;
+  if (Number(row?.count || 0) > 0) return;
+  if (!DEFAULT_OWNER.username || !DEFAULT_OWNER.password) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "No users found. Set ADMIN_USERNAME and ADMIN_PASSWORD to bootstrap the first user."
+      );
+    }
+    console.warn(
+      "No users found and ADMIN_USERNAME/ADMIN_PASSWORD not set. Skipping default owner creation."
+    );
+    return;
+  }
   const id = randomUUID();
   await runAsync(
     `INSERT INTO users (id, username, password_hash, role, permissions_json, created_at)
@@ -342,8 +404,21 @@ const ensureDefaultOwner = async () => {
       new Date().toISOString(),
     ]
   );
-  console.log(
-    `Default owner created. Username: ${DEFAULT_OWNER.username} Password: ${DEFAULT_OWNER.password}`
+  console.log(`Default owner created. Username: ${DEFAULT_OWNER.username}`);
+};
+
+const upsertCommissionConfig = async (config) => {
+  const payload = JSON.stringify(config || {});
+  if (isPostgres) {
+    await runAsync(
+      "INSERT INTO app_config (key, value) VALUES ('commission_config', ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      [payload]
+    );
+    return;
+  }
+  await runAsync(
+    "INSERT OR REPLACE INTO app_config (key, value) VALUES ('commission_config', ?)",
+    [payload]
   );
 };
 
@@ -387,9 +462,12 @@ const requireAnyPermission = (permissions) => (req, res, next) => {
   return res.status(403).json({ error: "Forbidden" });
 };
 
-ensureDefaultOwner().catch((err) =>
-  console.error("Failed to ensure default owner", err)
-);
+ensureDefaultOwner().catch((err) => {
+  console.error("Failed to ensure default owner", err);
+  if (process.env.NODE_ENV === "production") {
+    process.exit(1);
+  }
+});
 
 const addWorkingDays = (startDate, days) => {
   const date = new Date(startDate);
@@ -641,88 +719,6 @@ const logActivity = async ({
     ]
   );
 };
-
-const seedIfEmpty = async () => {
-  const row = await getAsync("SELECT COUNT(*) as count FROM people");
-  if (row.count > 0) return;
-
-  await Promise.all(
-    seedPeople.map((person) =>
-      runAsync(
-        "INSERT INTO people (id, name, sponsor_id, sponsor_stage, phone, join_date) VALUES (?, ?, ?, ?, ?, ?)",
-        [
-          person.id,
-          person.name,
-          person.sponsor_id,
-          person.sponsor_stage || null,
-          person.phone,
-          person.join_date,
-        ]
-      )
-    )
-  );
-
-  await Promise.all(
-    seedInvestments.map((inv) =>
-      runAsync(
-        `INSERT INTO investments (id, person_id, stage, amount, area_sq_yd, date, buyback_date, buyback_months, return_percent, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          inv.id,
-          inv.person_id,
-          inv.stage,
-          inv.amount,
-          inv.area_sq_yd || 0,
-          inv.date,
-          inv.buyback_date,
-          inv.buyback_months || 36,
-          inv.return_percent || 200,
-          inv.status,
-        ]
-      )
-    )
-  );
-
-  await Promise.all(
-    seedSales.map((sale) =>
-      runAsync(
-        `INSERT INTO sales (id, seller_id, property_name, location, area_sq_yd, total_amount, sale_date)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          sale.id,
-          sale.seller_id,
-          sale.property_name,
-          sale.location,
-          sale.area_sq_yd,
-          sale.total_amount,
-          sale.sale_date,
-        ]
-      )
-    )
-  );
-
-  await Promise.all(
-    seedPayments.map((payment) =>
-      runAsync(
-        "INSERT INTO payments (id, sale_id, amount, date) VALUES (?, ?, ?, ?)",
-        [payment.id, payment.sale_id, payment.amount, payment.date]
-      )
-    )
-  );
-
-  await Promise.all(
-    seedCommissionPayments.map((payment) =>
-      runAsync(
-        "INSERT INTO commission_payments (id, person_id, amount, date) VALUES (?, ?, ?, ?)",
-        [payment.id, payment.person_id, payment.amount, payment.date]
-      )
-    )
-  );
-};
-
-seedIfEmpty().catch((err) => {
-  console.error("Failed to seed database", err);
-});
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
@@ -1803,10 +1799,7 @@ app.post("/activity-logs/:id/undo", requirePermission("activity:write"), async (
         }
         break;
       case "UPDATE_CONFIG":
-        await runAsync(
-          "INSERT OR REPLACE INTO app_config (key, value) VALUES ('commission_config', ?)",
-          [JSON.stringify(undoPayload)]
-        );
+        await upsertCommissionConfig(undoPayload);
         await runAsync(
           `INSERT INTO commission_config_history (id, created_at, level_rates_json, personal_rates_json)
            VALUES (?, ?, ?, ?)`,
@@ -2130,10 +2123,7 @@ app.put("/config", requirePermission("settings:write"), async (req, res) => {
     "SELECT value FROM app_config WHERE key = 'commission_config'"
   );
   const config = req.body;
-  await runAsync(
-    "INSERT OR REPLACE INTO app_config (key, value) VALUES ('commission_config', ?)",
-    [JSON.stringify(config)]
-  );
+  await upsertCommissionConfig(config);
   await runAsync(
     `INSERT INTO commission_config_history (id, created_at, level_rates_json, personal_rates_json)
      VALUES (?, ?, ?, ?)`,
