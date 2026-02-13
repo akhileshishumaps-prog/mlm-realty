@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
+import brandLogo from "./assets/logo.jpg";
 import {
   buildPeopleIndex,
   buildSalesIndex,
@@ -31,7 +32,6 @@ import {
   fetchInvestmentPayments,
   fetchCommissionSummary,
   fetchCommissionBalance,
-  fetchPincodes,
   fetchEmployees,
   fetchSalaryPayments,
   fetchUsers,
@@ -1150,60 +1150,6 @@ function App() {
     blocksCount: "",
     blocks: [],
   });
-  const [pincodeOptions, setPincodeOptions] = useState([]);
-  const [pincodeLoading, setPincodeLoading] = useState(false);
-  const [pincodeError, setPincodeError] = useState("");
-  const [pincodeSelected, setPincodeSelected] = useState(false);
-  const [pincodeQuery, setPincodeQuery] = useState("");
-  const latestPincodeQuery = useRef("");
-  const visiblePincodeOptions = useMemo(() => {
-    const term = (pincodeQuery || "").trim();
-    if (!term) return pincodeOptions;
-    const isNumeric = /^\d+$/.test(term);
-    if (isNumeric) {
-      return pincodeOptions.filter((item) =>
-        String(item.pincode || "").startsWith(term)
-      );
-    }
-    const lowered = term.toLowerCase();
-    return pincodeOptions.filter((item) => {
-      const label = `${item.pincode} ${item.district || ""} ${item.name || ""}`.toLowerCase();
-      return label.includes(lowered);
-    });
-  }, [pincodeOptions, pincodeQuery]);
-
-  const handlePincodeSearch = useCallback(async (query) => {
-    const state = projectForm.state;
-    const term = (query || "").trim();
-    if (!state) {
-      setPincodeOptions([]);
-      return;
-    }
-    const isNumeric = /^\d{3,6}$/.test(term);
-    if (!term || (!isNumeric && term.length < 3)) {
-      setPincodeOptions([]);
-      setPincodeLoading(false);
-      return;
-    }
-    latestPincodeQuery.current = term;
-    setPincodeOptions([]);
-    setPincodeLoading(true);
-    setPincodeError("");
-    try {
-      const data = await fetchPincodes(state, term);
-      if (latestPincodeQuery.current !== term) return;
-      setPincodeOptions(data.results || []);
-    } catch (err) {
-      console.error(err);
-      if (latestPincodeQuery.current !== term) return;
-      setPincodeOptions([]);
-      setPincodeError("Failed to load pincodes.");
-    } finally {
-      if (latestPincodeQuery.current === term) {
-        setPincodeLoading(false);
-      }
-    }
-  }, [projectForm.state]);
   const [paymentForm, setPaymentForm] = useState({
     saleId: "",
     amount: "",
@@ -2042,11 +1988,6 @@ function App() {
 
   const handleProjectStateChange = (value) => {
     setProjectForm((prev) => ({ ...prev, state: value, pincode: "" }));
-    setPincodeOptions([]);
-    setPincodeError("");
-    setPincodeSelected(false);
-    setPincodeQuery("");
-    latestPincodeQuery.current = "";
   };
 
   const dashboardStats = useMemo(() => {
@@ -3024,12 +2965,6 @@ function App() {
         blocksCount: "",
       blocks: [],
     });
-    setPincodeOptions([]);
-    setPincodeLoading(false);
-    setPincodeError("");
-    setPincodeSelected(false);
-    setPincodeQuery("");
-    latestPincodeQuery.current = "";
   };
 
   const resetPaymentForm = () => {
@@ -3604,10 +3539,6 @@ function App() {
       setFormError("All project fields are required.");
       return;
     }
-    if (!pincodeSelected) {
-      setFormError("Select a pincode from the dropdown.");
-      return;
-    }
     const blocks = projectForm.blocks || [];
     if (!blocks.length || blocks.length !== Number(projectForm.blocksCount)) {
       setFormError("Please add all block details.");
@@ -4153,9 +4084,11 @@ function App() {
       <div className="login-screen">
         <div className="login-card">
           <div className="brand">
-            <div className="brand-mark">MLM</div>
+            <div className="brand-mark">
+              <img className="brand-logo" src={brandLogo} alt="KCD Real Estate logo" />
+            </div>
             <div>
-              <p className="brand-title">Nimbus Realty</p>
+              <p className="brand-title">KCD Real Estate</p>
               <p className="brand-subtitle">Commission Core</p>
             </div>
           </div>
@@ -4234,9 +4167,11 @@ function App() {
       )}
       <aside className={`sidebar ${mobileNavOpen ? "sidebar-open" : ""}`}>
         <div className="brand">
-          <div className="brand-mark">MLM</div>
+          <div className="brand-mark">
+            <img className="brand-logo" src={brandLogo} alt="KCD Real Estate logo" />
+          </div>
           <div>
-            <p className="brand-title">Nimbus Realty</p>
+            <p className="brand-title">KCD Real Estate</p>
             <p className="brand-subtitle">Commission Core</p>
           </div>
         </div>
@@ -4315,9 +4250,11 @@ function App() {
             type="button"
             onClick={() => requestViewChange("dashboard")}
           >
-            <div className="brand-mark">MLM</div>
+            <div className="brand-mark">
+              <img className="brand-logo" src={brandLogo} alt="KCD Real Estate logo" />
+            </div>
             <div>
-              <p className="brand-title">Nimbus Realty</p>
+              <p className="brand-title">KCD Real Estate</p>
               <p className="brand-subtitle">Commission Core</p>
             </div>
           </button>
@@ -4725,7 +4662,6 @@ function App() {
                 </button>
               </div>
             </div>
-            )}
           </section>
         )}
 
@@ -4899,7 +4835,6 @@ function App() {
                 </button>
               </div>
             </div>
-            )}
           </section>
         )}
 
@@ -7204,6 +7139,9 @@ function App() {
             </div>
           </section>
         )}
+        <footer className="app-footer">
+          © 2026, KCD Real Estate - Powered by Omrie Digital
+        </footer>
       </main>
 
       {selectedActivity && (
@@ -8702,45 +8640,21 @@ function App() {
                 </label>
                 <label>
                   Pincode
-                  <SearchableSelect
+                  <input
                     value={projectForm.pincode}
-                    onChange={(value) =>
-                      setProjectForm((prev) => ({ ...prev, pincode: value }))
-                    }
-                    onInputChange={(val) => {
-                      setPincodeSelected(false);
-                      setPincodeQuery(val);
+                    onChange={(e) => {
+                      const next = e.target.value.replace(/\D/g, "").slice(0, 6);
+                      setProjectForm((prev) => ({ ...prev, pincode: next }));
                     }}
-                    onSelect={(val) => {
-                      setPincodeSelected(true);
-                      setPincodeQuery(val);
-                    }}
-                    onSearch={handlePincodeSearch}
-                    options={visiblePincodeOptions.map((item) => ({
-                      value: item.pincode,
-                      label: `${item.pincode}${
-                        item.district ? ` • ${item.district}` : ""
-                      }${item.name ? ` • ${item.name}` : ""}`,
-                    }))}
                     placeholder={
-                      projectForm.state ? "Search pincode..." : "Select state first"
+                      projectForm.state ? "Enter pincode..." : "Select state first"
                     }
                     disabled={!projectForm.state}
-                    loadingLabel={
-                      pincodeLoading
-                        ? "Searching..."
-                        : pincodeError ||
-                          (projectForm.state
-                            ? pincodeQuery.trim().length >= 3 &&
-                              !visiblePincodeOptions.length
-                              ? "Type correct pincode for selected state"
-                              : "Type at least 3 characters"
-                            : "Select state first")
-                    }
                     name="project-pincode"
                     autoComplete="new-password"
                     inputMode="numeric"
                     maxLength={6}
+                    required
                   />
                 </label>
               </div>

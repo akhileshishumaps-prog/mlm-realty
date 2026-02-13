@@ -45,13 +45,21 @@
 }
 
 .brand-mark {
-  width: 48px;
-  height: 48px;
+  width: 52px;
+  height: 52px;
   border-radius: 14px;
-  background: var(--copper);
-  display: grid;
-  place-items: center;
-  font-weight: 700;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.18);
+}
+
+.brand-logo {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .brand-title {
@@ -121,6 +129,15 @@
   gap: 8px;
 }
 
+.app-footer {
+  margin-top: auto;
+  text-align: center;
+  color: var(--ink-500);
+  font-size: 12px;
+  padding: 16px 0 6px;
+  border-top: 1px solid #e8edf3;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -136,6 +153,9 @@
   padding: 32px 36px 48px;
   height: 100vh;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
 .mobile-header {
@@ -1236,7 +1256,7 @@
   .brand-mark {
     width: 40px;
     height: 40px;
-    font-size: 14px;
+    padding: 4px;
   }
 
   .nav-item {
