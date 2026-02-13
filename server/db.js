@@ -16,14 +16,11 @@ const USE_POSTGRES = Boolean(DATABASE_URL);
 
 export const openDb = () => {
   if (USE_POSTGRES) {
+    const sslOption =
+      process.env.DB_SSL === "false" ? false : { rejectUnauthorized: false };
     const pool = new Pool({
       connectionString: DATABASE_URL,
-      ssl:
-        process.env.DB_SSL === "false"
-          ? undefined
-          : process.env.NODE_ENV === "production"
-          ? { rejectUnauthorized: false }
-          : undefined,
+      ssl: sslOption,
     });
     return { mode: "postgres", pool };
   }
