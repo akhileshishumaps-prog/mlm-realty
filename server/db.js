@@ -12,6 +12,16 @@ const __dirname = path.dirname(__filename);
 const DB_PATH = path.resolve(__dirname, "mlm-realty.db");
 const SCHEMA_PATH = path.resolve(__dirname, "schema.sql");
 const DATABASE_URL = process.env.DATABASE_URL;
+const sanitizeDatabaseUrl = (raw) => {
+  if (!raw) return raw;
+  try {
+    const url = new URL(raw);
+    url.searchParams.delete("sslmode");
+    return url.toString();
+  } catch (_err) {
+    return raw;
+  }
+};
 const USE_POSTGRES = Boolean(DATABASE_URL);
 
 export const openDb = () => {
@@ -19,7 +29,7 @@ export const openDb = () => {
     const sslOption =
       process.env.DB_SSL === "false" ? false : { rejectUnauthorized: false };
     const pool = new Pool({
-      connectionString: DATABASE_URL,
+      connectionString: sanitizeDatabaseUrl(DATABASE_URL),
       ssl: sslOption,
     });
     return { mode: "postgres", pool };
