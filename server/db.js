@@ -613,6 +613,18 @@ export const initDb = async (db) => {
     await db.pool.query(stmt);
   }
 
+  await db.pool.query(
+    `CREATE TABLE IF NOT EXISTS pincodes (
+      pincode TEXT NOT NULL,
+      office_name TEXT,
+      district TEXT,
+      state TEXT NOT NULL,
+      state_key TEXT NOT NULL,
+      name_key TEXT,
+      district_key TEXT
+    )`
+  );
+
   const migrations = [
     "ALTER TABLE people ADD COLUMN IF NOT EXISTS sponsor_stage INTEGER",
     "ALTER TABLE people ADD COLUMN IF NOT EXISTS status TEXT",
