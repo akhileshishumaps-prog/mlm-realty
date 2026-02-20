@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS investments (
   area_sq_yd INTEGER NOT NULL DEFAULT 0,
   actual_area_sq_yd REAL,
   date TEXT NOT NULL,
-  buyback_date TEXT NOT NULL,
+  buyback_date TEXT,
   buyback_months INTEGER NOT NULL DEFAULT 36,
   return_percent INTEGER NOT NULL DEFAULT 200,
   project_id TEXT,

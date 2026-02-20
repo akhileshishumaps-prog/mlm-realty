@@ -10,6 +10,82 @@
   --white: #ffffff;
 }
 
+@media (max-width: 768px) {
+  .modal-card,
+  .modal-wide {
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .modal-header {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: var(--white);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: nowrap;
+    gap: 8px;
+    padding: 12px 14px;
+    margin: -14px -14px 8px;
+    border-bottom: 1px solid #edf1f5;
+  }
+
+  .modal-header h3 {
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.2;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .modal-header .ghost-button {
+    flex-shrink: 0;
+    padding: 8px 12px;
+    white-space: nowrap;
+  }
+
+  .project-details .detail-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .project-details .detail-row span {
+    flex: 0 0 auto;
+    font-size: 12px;
+  }
+
+  .project-details .detail-row strong {
+    text-align: left;
+    width: 100%;
+    font-size: 13px;
+  }
+
+  .profile-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .profile-card {
+    padding: 14px;
+  }
+
+  .table-scroll {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .modal-wide .table-scroll .data-table {
+    min-width: 1100px;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -592,6 +668,20 @@
   justify-content: space-between;
   gap: 12px;
   padding: 6px 0;
+  flex-wrap: wrap;
+}
+
+.project-details .detail-row span {
+  flex: 0 0 140px;
+  color: var(--ink-500);
+}
+
+.project-details .detail-row strong {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .table-scroll {
@@ -794,8 +884,8 @@
 
 .profile-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
   margin-bottom: 18px;
 }
 
@@ -1030,19 +1120,98 @@
   display: grid;
   gap: 16px;
   max-height: 90vh;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .modal-wide {
-  width: min(720px, 100%);
+  width: min(860px, 100%);
+  max-width: 95vw;
   max-height: 90vh;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+@media (max-width: 768px) {
+  .modal-card,
+  .modal-wide {
+    width: 100%;
+    max-width: 100vw;
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .modal-header {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 8px;
+    position: sticky;
+    top: 0;
+    background: var(--white);
+    z-index: 2;
+    padding: 12px 16px;
+    margin: -16px -16px 8px;
+    border-bottom: 1px solid #edf1f5;
+  }
+
+  .modal-header .ghost-button {
+    position: static;
+    margin: 0;
+    padding: 8px 12px;
+  }
+
+  .modal-header .ghost-button {
+    white-space: nowrap;
+  }
+
+  .modal-header h3 {
+    font-size: 16px;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  .project-details .detail-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .project-details .detail-row span {
+    flex: 0 0 auto;
+    font-size: 12px;
+  }
+
+  .project-details .detail-row strong {
+    text-align: left;
+    width: 100%;
+    font-size: 13px;
+  }
+
+  .profile-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .profile-card {
+    padding: 14px;
+  }
+
+  .table-scroll {
+    max-height: 260px;
+  }
+
+  .modal-wide .table-scroll .data-table {
+    min-width: 920px;
+  }
 }
 
 .modal-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .modal-form {
@@ -1366,5 +1535,102 @@
 
   .nav::-webkit-scrollbar {
     display: none;
+  }
+}
+
+/* Final mobile overrides to ensure modal header + table behave correctly */
+@media (max-width: 768px) {
+  .modal-card,
+  .modal-wide {
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+  }
+
+  .modal-card .modal-header,
+  .modal-wide .modal-header {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    flex-wrap: nowrap !important;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--white);
+    padding: 12px 14px;
+    margin: -14px -14px 8px;
+    border-bottom: 1px solid #edf1f5;
+  }
+
+  .modal-card .modal-header h3,
+  .modal-wide .modal-header h3 {
+    flex: 1;
+    min-width: 0;
+    font-size: 16px;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  .modal-card .modal-header .ghost-button,
+  .modal-wide .modal-header .ghost-button {
+    flex-shrink: 0;
+    padding: 8px 12px;
+    white-space: nowrap;
+    margin-left: auto;
+    border: 1px solid #d8dee6;
+  }
+
+  .modal-wide .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .modal-wide .table-scroll .data-table {
+    display: table;
+    min-width: 1400px;
+  }
+}
+
+/* Mobile-specific fixes for Project Details modal (override everything above) */
+@media (max-width: 768px) {
+  .modal-wide {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px) !important;
+  }
+
+  .modal-wide .modal-header {
+    display: grid !important;
+    grid-template-columns: 1fr auto !important;
+    align-items: center !important;
+    gap: 8px !important;
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 6 !important;
+    background: var(--white) !important;
+    padding: 12px 14px !important;
+    margin: -14px -14px 8px !important;
+    border-bottom: 1px solid #edf1f5 !important;
+  }
+
+  .modal-wide .modal-header h3 {
+    min-width: 0 !important;
+    font-size: 16px !important;
+    line-height: 1.2 !important;
+  }
+
+  .modal-wide .modal-header .ghost-button {
+    justify-self: end !important;
+    padding: 8px 12px !important;
+    white-space: nowrap !important;
+  }
+
+  .modal-wide .table-scroll {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+
+  .modal-wide .table-scroll .data-table {
+    display: table !important;
+    width: max-content !important;
+    min-width: 1400px !important;
   }
 }

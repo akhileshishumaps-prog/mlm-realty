@@ -676,9 +676,16 @@ const autoCancelOverdueInvestments = async () => {
       return acc;
     }, 0);
     if (paidByDueDate >= investment.amount) {
+      const completionDate = invPayments.reduce((latest, payment) => {
+        if (!latest) return payment.date;
+        return new Date(payment.date) > new Date(latest) ? payment.date : latest;
+      }, null);
+      const buybackDate = completionDate
+        ? toISODate(addMonths(completionDate, Number(investment.buyback_months || 36)))
+        : "";
       await runAsync(
-        "UPDATE investments SET payment_status = 'paid' WHERE id = ?",
-        [investment.id]
+        "UPDATE investments SET payment_status = 'paid', paid_amount = ?, paid_date = ?, buyback_date = ? WHERE id = ?",
+        [paidByDueDate, completionDate, buybackDate, investment.id]
       );
       await runAsync(
         "UPDATE people SET status = 'active' WHERE id = ?",
@@ -1964,6 +1971,9 @@ app.get(
         s.status AS last_sale_status,
         s.seller_id AS last_sale_seller_id,
         sp.name AS last_sale_seller_name,
+        sp.phone AS last_sale_seller_phone,
+        c.name AS last_sale_customer_name,
+        c.phone AS last_sale_customer_phone,
         inv.date AS last_investment_date,
         inv.amount AS last_investment_amount,
         inv.area_sq_yd AS last_investment_area,
@@ -1976,6 +1986,7 @@ app.get(
        FROM project_properties prop
        LEFT JOIN sales s ON s.id = prop.last_sale_id
        LEFT JOIN people sp ON sp.id = s.seller_id
+       LEFT JOIN customers c ON c.id = s.customer_id
        LEFT JOIN investments inv ON inv.id = prop.last_investment_id
        LEFT JOIN people ip ON ip.id = inv.person_id
        ${where}
@@ -2008,6 +2019,9 @@ app.get(
         s.status AS last_sale_status,
         s.seller_id AS last_sale_seller_id,
         sp.name AS last_sale_seller_name,
+        sp.phone AS last_sale_seller_phone,
+        c.name AS last_sale_customer_name,
+        c.phone AS last_sale_customer_phone,
         inv.date AS last_investment_date,
         inv.amount AS last_investment_amount,
         inv.area_sq_yd AS last_investment_area,
@@ -2020,6 +2034,7 @@ app.get(
        FROM project_properties prop
        LEFT JOIN sales s ON s.id = prop.last_sale_id
        LEFT JOIN people sp ON sp.id = s.seller_id
+       LEFT JOIN customers c ON c.id = s.customer_id
        LEFT JOIN investments inv ON inv.id = prop.last_investment_id
        LEFT JOIN people ip ON ip.id = inv.person_id
        ${where}
@@ -2477,9 +2492,7 @@ app.post("/sales", requirePermission("sales:write"), async (req, res) => {
     displayName = "Property";
   }
   const id = randomUUID();
-  const buybackDate = buybackEnabled
-    ? toISODate(addMonths(sale_date, Number(buyback_months || 0)))
-    : null;
+  const buybackDate = null;
   await runAsync(
     `INSERT INTO sales (id, seller_id, property_name, location, area_sq_yd, actual_area_sq_yd, total_amount, sale_date, status, project_id, block_id, property_id, customer_id, buyback_enabled, buyback_months, buyback_return_percent, buyback_date)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -2609,9 +2622,21 @@ app.put("/sales/:id", requirePermission("sales:write"), async (req, res) => {
   if (property.status !== "available" && property.id !== current.property_id) {
     return res.status(400).json({ error: "Property is not available." });
   }
-  const buybackDate = buybackEnabled
-    ? toISODate(addMonths(sale_date, Number(buyback_months || 0)))
+  const payments = await allAsync(
+    "SELECT amount, date FROM payments WHERE sale_id = ?",
+    [id]
+  );
+  const totalPaid = payments.reduce((acc, payment) => acc + payment.amount, 0);
+  const completionDate = totalPaid >= Number(total_amount || 0)
+    ? payments.reduce((latest, payment) => {
+        if (!latest) return payment.date;
+        return new Date(payment.date) > new Date(latest) ? payment.date : latest;
+      }, null)
     : null;
+  const buybackDate =
+    buybackEnabled && completionDate
+      ? toISODate(addMonths(completionDate, Number(buyback_months || 0)))
+      : null;
   const nextBuybackStatus = buybackEnabled
     ? current?.buyback_status === "paid"
       ? "paid"
@@ -2704,7 +2729,6 @@ app.post(
     area_sq_yd,
     actual_area_sq_yd,
     date,
-    buyback_date,
     buyback_months,
     return_percent,
     project_id,
@@ -2750,9 +2774,15 @@ app.post(
     }
   }
   const paymentStatus = initialPayment >= baseAmount && baseAmount > 0 ? "paid" : "pending";
+  const paidDate = paymentStatus === "paid" ? (initial_payment_date || date) : null;
+  const buybackDate =
+    paymentStatus === "paid"
+      ? toISODate(addMonths(paidDate, Number(buyback_months || 36)))
+      : "";
+  const paidAmount = paymentStatus === "paid" ? baseAmount : null;
   await runAsync(
-    `INSERT INTO investments (id, person_id, stage, amount, area_sq_yd, actual_area_sq_yd, date, buyback_date, buyback_months, return_percent, project_id, block_id, property_id, status, payment_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO investments (id, person_id, stage, amount, area_sq_yd, actual_area_sq_yd, date, buyback_date, buyback_months, return_percent, project_id, block_id, property_id, status, payment_status, paid_amount, paid_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       person_id,
@@ -2761,7 +2791,7 @@ app.post(
       area_sq_yd || 0,
       actual_area_sq_yd ?? null,
       date,
-      buyback_date,
+      buybackDate,
       buyback_months || 36,
       return_percent || 200,
       project_id || null,
@@ -2769,6 +2799,8 @@ app.post(
       property_id,
       status,
       paymentStatus,
+      paidAmount,
+      paidDate,
     ]
   );
   if (initialPayment) {
@@ -2802,7 +2834,7 @@ app.post(
       area_sq_yd,
       actual_area_sq_yd: actual_area_sq_yd ?? null,
       date,
-      buyback_date,
+      buyback_date: buybackDate,
       buyback_months,
       return_percent,
       project_id,
@@ -2810,6 +2842,8 @@ app.post(
       property_id,
       status,
       payment_status: paymentStatus,
+      paid_amount: paidAmount,
+      paid_date: paidDate,
     },
   });
   res.json({ id });
@@ -2833,6 +2867,13 @@ app.put(
   const nextStatus = status ?? current.status;
   const nextPaidDate =
     paid_date === undefined ? current.paid_date : paid_date;
+  let nextBuybackDate = current.buyback_date || "";
+  if (nextStatus === "paid") {
+    const completionDate = nextPaidDate || new Date().toISOString();
+    nextBuybackDate = toISODate(
+      addMonths(completionDate, Number(current.buyback_months || 36))
+    );
+  }
   if (nextStatus === "paid" && current.status !== "paid") {
     if (current.buyback_date) {
       const dueDate = current.buyback_date.includes("T")
@@ -2854,11 +2895,12 @@ app.put(
   const nextReturnPercent =
     return_percent === undefined ? current.return_percent : return_percent;
   await runAsync(
-    "UPDATE investments SET status = ?, paid_amount = ?, paid_date = ?, area_sq_yd = ?, actual_area_sq_yd = ?, return_percent = ? WHERE id = ?",
+    "UPDATE investments SET status = ?, paid_amount = ?, paid_date = ?, buyback_date = ?, area_sq_yd = ?, actual_area_sq_yd = ?, return_percent = ? WHERE id = ?",
     [
       nextStatus,
       nextPaidAmount || null,
       nextPaidDate || null,
+      nextBuybackDate,
       nextAreaSqYd,
       nextActualAreaSqYd ?? null,
       nextReturnPercent,
@@ -2877,6 +2919,7 @@ app.put(
       status: nextStatus,
       paid_amount: nextPaidAmount,
       paid_date: nextPaidDate,
+      buyback_date: nextBuybackDate,
       area_sq_yd: nextAreaSqYd,
       actual_area_sq_yd: nextActualAreaSqYd ?? null,
       return_percent: nextReturnPercent,
@@ -2948,6 +2991,17 @@ app.post("/payments", requirePermission("sales:write"), async (req, res) => {
     "INSERT INTO payments (id, sale_id, amount, date) VALUES (?, ?, ?, ?)",
     [id, sale_id, amount, date]
   );
+  const newTotal = paidSoFar + Number(amount);
+  if (newTotal >= sale.total_amount && Number(sale.buyback_enabled || 0) === 1) {
+    const buybackDate = toISODate(
+      addMonths(date, Number(sale.buyback_months || 0))
+    );
+    const nextStatus = sale.buyback_status === "paid" ? "paid" : "pending";
+    await runAsync(
+      "UPDATE sales SET buyback_date = ?, buyback_status = ? WHERE id = ?",
+      [buybackDate, nextStatus, sale_id]
+    );
+  }
   await logActivity({
     action_type: "CREATE_PAYMENT",
     entity_type: "payment",
@@ -3051,9 +3105,12 @@ app.post(
     });
     const newTotal = paidSoFar + Number(amount);
     if (newTotal >= investment.amount) {
+      const buybackDate = toISODate(
+        addMonths(date, Number(investment.buyback_months || 36))
+      );
       await runAsync(
-        "UPDATE investments SET payment_status = 'paid' WHERE id = ?",
-        [investment_id]
+        "UPDATE investments SET payment_status = 'paid', paid_amount = ?, paid_date = ?, buyback_date = ? WHERE id = ?",
+        [newTotal, date, buybackDate, investment_id]
       );
       await runAsync("UPDATE people SET status = 'active' WHERE id = ?", [
         investment.person_id,
