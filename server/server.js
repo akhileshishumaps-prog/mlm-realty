@@ -2133,6 +2133,233 @@ app.post("/projects", requirePermission("projects:write"), async (req, res) => {
   res.json({ id });
 });
 
+app.put("/projects/:id", requirePermission("projects:write"), async (req, res) => {
+  const { id } = req.params;
+  const {
+    name,
+    city,
+    state,
+    pincode,
+    address,
+    total_area,
+    total_value,
+    blocks,
+  } = req.body;
+
+  const project = await getAsync("SELECT * FROM projects WHERE id = ?", [id]);
+  if (!project) {
+    return res.status(404).json({ error: "Project not found." });
+  }
+
+  const cleanedBlocks = Array.isArray(blocks)
+    ? blocks.map((block) => ({
+        id: block.id || null,
+        name: String(block.name || "")
+          .trim()
+          .replace(/[^A-Za-z]/g, "")
+          .toUpperCase(),
+        total_properties: Number(block.total_properties || 0),
+      }))
+    : [];
+
+  if (
+    !name ||
+    !city ||
+    !state ||
+    !pincode ||
+    !address ||
+    !cleanedBlocks.length
+  ) {
+    return res.status(400).json({ error: "All project fields are required." });
+  }
+
+  if (cleanedBlocks.some((block) => !block.name || !block.total_properties)) {
+    return res
+      .status(400)
+      .json({ error: "Each block needs a name and total properties." });
+  }
+
+  const existingBlocks = await allAsync(
+    "SELECT id, name, total_properties FROM project_blocks WHERE project_id = ?",
+    [id]
+  );
+  const existingMap = new Map(existingBlocks.map((block) => [block.id, block]));
+  if (cleanedBlocks.length < existingBlocks.length) {
+    return res
+      .status(400)
+      .json({ error: "Blocks cannot be removed from this project." });
+  }
+
+  const nameSet = new Set();
+  for (const block of cleanedBlocks) {
+    const key = block.name.toUpperCase();
+    if (nameSet.has(key)) {
+      return res
+        .status(400)
+        .json({ error: "Block names must be unique within a project." });
+    }
+    nameSet.add(key);
+  }
+
+  const parseIndex = (propName) => {
+    const match = String(propName || "").match(/-(\d+)$/);
+    return match ? Number(match[1]) : null;
+  };
+
+  for (const block of cleanedBlocks) {
+    if (!block.id) {
+      continue;
+    }
+    const existing = existingMap.get(block.id);
+    if (!existing) {
+      return res.status(400).json({ error: "Invalid block selected." });
+    }
+    const props = await allAsync(
+      "SELECT id, name, status FROM project_properties WHERE block_id = ?",
+      [block.id]
+    );
+    const soldIndexes = props
+      .filter((prop) => prop.status === "sold")
+      .map((prop) => parseIndex(prop.name))
+      .filter((value) => Number.isFinite(value));
+    const maxSoldIndex = soldIndexes.length
+      ? Math.max(...soldIndexes)
+      : 0;
+
+    if (maxSoldIndex > 0 && block.name !== existing.name) {
+      return res.status(400).json({
+        error:
+          "Block name cannot be changed while properties from that block are sold.",
+      });
+    }
+
+    if (maxSoldIndex > 0 && block.total_properties < maxSoldIndex) {
+      return res.status(400).json({
+        error:
+          "Reduce sold properties first. Total properties cannot be less than the highest sold property number.",
+      });
+    }
+  }
+
+  await runAsync(
+    `UPDATE projects
+     SET name = ?, city = ?, state = ?, pincode = ?, address = ?, total_area = ?, total_value = ?
+     WHERE id = ?`,
+    [
+      name,
+      city,
+      state,
+      pincode,
+      address,
+      total_area || null,
+      total_value ?? project.total_value ?? null,
+      id,
+    ]
+  );
+
+  for (const block of cleanedBlocks) {
+    if (!block.id) {
+      const blockId = randomUUID();
+      await runAsync(
+        `INSERT INTO project_blocks (id, project_id, name, total_properties)
+         VALUES (?, ?, ?, ?)`,
+        [blockId, id, block.name, Number(block.total_properties || 0)]
+      );
+      const totalProps = Number(block.total_properties || 0);
+      for (let i = 1; i <= totalProps; i += 1) {
+        const propId = randomUUID();
+        await runAsync(
+          `INSERT INTO project_properties (id, project_id, block_id, name, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            propId,
+            id,
+            blockId,
+            `${block.name}-${i}`,
+            "available",
+            new Date().toISOString(),
+          ]
+        );
+      }
+      continue;
+    }
+
+    const existing = existingMap.get(block.id);
+    const props = await allAsync(
+      "SELECT id, name, status FROM project_properties WHERE block_id = ?",
+      [block.id]
+    );
+    const existingTotal = Number(existing.total_properties || 0);
+    const nextTotal = Number(block.total_properties || 0);
+
+    if (block.name !== existing.name) {
+      for (const prop of props) {
+        const index = parseIndex(prop.name);
+        if (!index) continue;
+        await runAsync(
+          "UPDATE project_properties SET name = ? WHERE id = ?",
+          [`${block.name}-${index}`, prop.id]
+        );
+      }
+    }
+
+    if (nextTotal > existingTotal) {
+      for (let i = existingTotal + 1; i <= nextTotal; i += 1) {
+        const propId = randomUUID();
+        await runAsync(
+          `INSERT INTO project_properties (id, project_id, block_id, name, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            propId,
+            id,
+            block.id,
+            `${block.name}-${i}`,
+            "available",
+            new Date().toISOString(),
+          ]
+        );
+      }
+    } else if (nextTotal < existingTotal) {
+      for (const prop of props) {
+        const index = parseIndex(prop.name);
+        if (!index || index <= nextTotal) continue;
+        if (prop.status !== "available") {
+          return res.status(400).json({
+            error:
+              "Reduce sold properties first. Some sold properties exceed the new total.",
+          });
+        }
+        await runAsync("DELETE FROM project_properties WHERE id = ?", [
+          prop.id,
+        ]);
+      }
+    }
+
+    await runAsync(
+      "UPDATE project_blocks SET name = ?, total_properties = ? WHERE id = ?",
+      [block.name, nextTotal, block.id]
+    );
+  }
+
+  await logActivity({
+    action_type: "UPDATE_PROJECT",
+    entity_type: "project",
+    entity_id: id,
+    payload: {
+      name,
+      city,
+      state,
+      pincode,
+      address,
+      total_area,
+      total_value: total_value ?? project.total_value ?? null,
+      blocks: cleanedBlocks,
+    },
+  });
+
+  res.json({ ok: true });
+});
+
 app.put("/config", requirePermission("settings:write"), async (req, res) => {
   const current = await getAsync(
     "SELECT value FROM app_config WHERE key = 'commission_config'"
@@ -2172,6 +2399,12 @@ app.get("/people", requirePermission("people:read"), async (_req, res) => {
 app.post("/people", requirePermission("people:write"), async (req, res) => {
   const { name, sponsor_id, sponsor_stage, phone, join_date, is_special } = req.body;
   const trimmedName = String(name || "").trim();
+  const specialFlag = Number(is_special || 0) === 1 ? 1 : 0;
+  if (specialFlag && String(req.user?.role || "").toLowerCase() !== "owner") {
+    return res
+      .status(403)
+      .json({ error: "Only the owner can add special members." });
+  }
   const existing = await getAsync(
     "SELECT id FROM people WHERE lower(trim(name)) = lower(trim(?))",
     [trimmedName]
@@ -2191,7 +2424,6 @@ app.post("/people", requirePermission("people:write"), async (req, res) => {
     }
   }
   const id = randomUUID();
-  const specialFlag = Number(is_special || 0) === 1 ? 1 : 0;
   const status = specialFlag ? "active" : "pending";
   await runAsync(
     "INSERT INTO people (id, name, sponsor_id, sponsor_stage, phone, join_date, status, is_special) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

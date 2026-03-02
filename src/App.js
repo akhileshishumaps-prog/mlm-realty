@@ -51,6 +51,7 @@ import {
   updatePerson,
   updateInvestment,
   createProject,
+  updateProject,
   login,
   fetchMe,
   createUser,
@@ -359,6 +360,7 @@ function App() {
   const [accountSuccess, setAccountSuccess] = useState("");
   const [treeSearch, setTreeSearch] = useState("");
   const [treeStageFilter, setTreeStageFilter] = useState("all");
+  const isOwner = authUser?.role?.toLowerCase() === "owner";
   const [treeScale, setTreeScale] = useState(1);
   const [treeOffset, setTreeOffset] = useState({ x: 0, y: 0 });
   const [treeDragging, setTreeDragging] = useState(false);
@@ -543,6 +545,49 @@ function App() {
     setProjectPropertySearch("");
     ensureProjectProperties(projectId, "all", true);
     loadProjectDetailProperties(projectId);
+  };
+
+  const openEditProject = (projectId) => {
+    if (!projectId) return;
+    const project = projectsById[projectId];
+    if (!project) return;
+    const parseIndex = (name) => {
+      const match = String(name || "").match(/-(\d+)$/);
+      return match ? Number(match[1]) : null;
+    };
+    const propsSource =
+      selectedProjectId === projectId && projectDetailProperties.length
+        ? projectDetailProperties
+        : projectProperties.filter((prop) => prop.project_id === projectId);
+    const blocks = blocksForProject(projectId).map((block) => {
+      const blockProps = propsSource.filter((prop) => prop.block_id === block.id);
+      const soldIndexes = blockProps
+        .filter((prop) => prop.status === "sold")
+        .map((prop) => parseIndex(prop.name))
+        .filter((value) => Number.isFinite(value));
+      const maxSoldIndex = soldIndexes.length ? Math.max(...soldIndexes) : 0;
+      return {
+        id: block.id,
+        name: block.name,
+        originalName: block.name,
+        totalProperties: block.total_properties || "",
+        maxSoldIndex,
+        hasSold: maxSoldIndex > 0,
+      };
+    });
+    setFormError("");
+    setEditingProjectId(projectId);
+    setProjectForm({
+      name: project.name || "",
+      city: project.city || "",
+      state: project.state || "",
+      pincode: project.pincode || "",
+      address: project.address || "",
+      totalArea: project.total_area || "",
+      blocksCount: String(blocks.length),
+      blocks,
+    });
+    setShowProjectModal(true);
   };
 
   const openCustomerDetail = (customerId) => {
@@ -1004,6 +1049,7 @@ function App() {
   const [showCommissionDetailModal, setShowCommissionDetailModal] = useState(false);
   const [commissionDetailId, setCommissionDetailId] = useState(null);
   const [showProjectModal, setShowProjectModal] = useState(false);
+  const [editingProjectId, setEditingProjectId] = useState(null);
   const [showProjectDetailModal, setShowProjectDetailModal] = useState(false);
   const [showPropertyDetailModal, setShowPropertyDetailModal] = useState(false);
   const [showCustomerDetailModal, setShowCustomerDetailModal] = useState(false);
@@ -3084,8 +3130,28 @@ function App() {
       pincode: "",
       address: "",
       totalArea: "",
-        blocksCount: "",
+      blocksCount: "",
       blocks: [],
+    });
+    setEditingProjectId(null);
+  };
+
+  const addProjectBlock = () => {
+    setProjectForm((prev) => {
+      const nextBlocks = [...(prev.blocks || [])];
+      nextBlocks.push({
+        id: null,
+        name: "",
+        originalName: "",
+        totalProperties: "",
+        maxSoldIndex: 0,
+        hasSold: false,
+      });
+      return {
+        ...prev,
+        blocksCount: String(nextBlocks.length),
+        blocks: nextBlocks,
+      };
     });
   };
 
@@ -3638,7 +3704,7 @@ function App() {
     }
   };
 
-  const handleCreateProject = async (event) => {
+  const handleSaveProject = async (event) => {
     event.preventDefault();
     setFormError("");
     if (!hasPermission("projects:write")) {
@@ -3671,26 +3737,65 @@ function App() {
       setFormError("Each block needs a name and total properties.");
       return;
     }
+    if (editingProjectId) {
+      const invalidBlock = blocks.find(
+        (block) =>
+          block.hasSold &&
+          Number(block.totalProperties || 0) < Number(block.maxSoldIndex || 0)
+      );
+      if (invalidBlock) {
+        setFormError(
+          `Block ${invalidBlock.name} has sold properties. Total properties must be at least ${invalidBlock.maxSoldIndex}.`
+        );
+        return;
+      }
+      const renamedSoldBlock = blocks.find(
+        (block) => block.hasSold && block.name?.trim() !== block.originalName
+      );
+      if (renamedSoldBlock) {
+        setFormError(
+          `Block ${renamedSoldBlock.originalName} cannot be renamed while properties are sold.`
+        );
+        return;
+      }
+    }
     try {
-      await createProject({
-        name: trimmedName,
-        city: projectForm.city.trim(),
-        state: projectForm.state.trim(),
-        pincode: projectForm.pincode.trim(),
-        address: projectForm.address.trim(),
-        total_area: projectForm.totalArea ? Number(projectForm.totalArea) : null,
-        blocks: blocks.map((block) => ({
-          name: block.name.trim(),
-          total_properties: Number(block.totalProperties),
-        })),
-      });
+      if (editingProjectId) {
+        await updateProject(editingProjectId, {
+          name: trimmedName,
+          city: projectForm.city.trim(),
+          state: projectForm.state.trim(),
+          pincode: projectForm.pincode.trim(),
+          address: projectForm.address.trim(),
+          total_area: projectForm.totalArea ? Number(projectForm.totalArea) : null,
+          blocks: blocks.map((block) => ({
+            id: block.id,
+            name: block.name.trim(),
+            total_properties: Number(block.totalProperties),
+          })),
+        });
+        addNotification("Project updated successfully.");
+      } else {
+        await createProject({
+          name: trimmedName,
+          city: projectForm.city.trim(),
+          state: projectForm.state.trim(),
+          pincode: projectForm.pincode.trim(),
+          address: projectForm.address.trim(),
+          total_area: projectForm.totalArea ? Number(projectForm.totalArea) : null,
+          blocks: blocks.map((block) => ({
+            name: block.name.trim(),
+            total_properties: Number(block.totalProperties),
+          })),
+        });
+        addNotification("Project added successfully.");
+      }
       await loadData();
       setShowProjectModal(false);
       resetProjectForm();
-      addNotification("Project added successfully.");
     } catch (err) {
       console.error(err);
-      setFormError("Failed to add project.");
+      setFormError(err?.message || "Failed to save project.");
     }
   };
 
@@ -7473,36 +7578,38 @@ function App() {
                   required
                 />
               </label>
-              <div className="checkbox-grid">
-                <label className="checkbox-item">
-                  <input
-                    type="checkbox"
-                    checked={personForm.isSpecial}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setPersonForm((prev) =>
-                        checked
-                          ? {
-                              ...prev,
-                              isSpecial: true,
-                              investmentAmount: "",
-                              investmentArea: "",
-                              investmentActualArea: "",
-                              investmentPaymentAmount: "",
-                              investmentPaymentDate: getTodayLocal(),
-                              buybackMonths: "",
-                              returnPercent: "",
-                              projectId: "",
-                              blockId: "",
-                              propertyId: "",
-                            }
-                          : { ...prev, isSpecial: false }
-                      );
-                    }}
-                  />
-                  Special member (no investment required)
-                </label>
-              </div>
+              {isOwner && (
+                <div className="checkbox-grid">
+                  <label className="checkbox-item">
+                    <input
+                      type="checkbox"
+                      checked={personForm.isSpecial}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setPersonForm((prev) =>
+                          checked
+                            ? {
+                                ...prev,
+                                isSpecial: true,
+                                investmentAmount: "",
+                                investmentArea: "",
+                                investmentActualArea: "",
+                                investmentPaymentAmount: "",
+                                investmentPaymentDate: getTodayLocal(),
+                                buybackMonths: "",
+                                returnPercent: "",
+                                projectId: "",
+                                blockId: "",
+                                propertyId: "",
+                              }
+                            : { ...prev, isSpecial: false }
+                        );
+                      }}
+                    />
+                    Special member (no investment required)
+                  </label>
+                </div>
+              )}
               {personForm.isSpecial ? (
                 <p className="helper-text">
                   Special members can be added without investment. They can
@@ -8100,21 +8207,6 @@ function App() {
               </label>
               <div className="modal-row">
                 <label>
-                Commission Area (sq yd)
-                  <input
-                    type="number"
-                    value={saleForm.areaSqYd}
-                    disabled={saleReadOnly}
-                    onChange={(e) =>
-                      setSaleForm((prev) => ({
-                        ...prev,
-                        areaSqYd: e.target.value,
-                      }))
-                    }
-                    required
-                  />
-                </label>
-                <label>
                   Actual Area (sq yd)
                   <input
                     type="number"
@@ -8128,6 +8220,21 @@ function App() {
                       }))
                     }
                     placeholder="Optional"
+                  />
+                </label>
+                <label>
+                  Commission Area (sq yd)
+                  <input
+                    type="number"
+                    value={saleForm.areaSqYd}
+                    disabled={saleReadOnly}
+                    onChange={(e) =>
+                      setSaleForm((prev) => ({
+                        ...prev,
+                        areaSqYd: e.target.value,
+                      }))
+                    }
+                    required
                   />
                 </label>
                 <label>
@@ -8722,7 +8829,7 @@ function App() {
         <div className="modal-overlay">
           <div className="modal-card modal-wide">
             <div className="modal-header">
-              <h3>Add New Project</h3>
+              <h3>{editingProjectId ? "Edit Project" : "Add New Project"}</h3>
               <button
                 className="ghost-button"
                 type="button"
@@ -8734,7 +8841,7 @@ function App() {
                 Close
               </button>
             </div>
-            <form className="modal-form" onSubmit={handleCreateProject}>
+            <form className="modal-form" onSubmit={handleSaveProject}>
               <label>
                 Project Name
                 <input
@@ -8821,6 +8928,7 @@ function App() {
                   type="number"
                   min="1"
                   value={projectForm.blocksCount}
+                  disabled={Boolean(editingProjectId)}
                   onChange={(e) => {
                     const count = Math.max(0, Number(e.target.value));
                     setProjectForm((prev) => {
@@ -8851,6 +8959,7 @@ function App() {
                         Block Name
                         <input
                           value={block.name}
+                          disabled={Boolean(editingProjectId && block.hasSold)}
                           onChange={(e) => {
                             const cleaned = e.target.value
                               .replace(/[^A-Za-z]/g, "")
@@ -8872,6 +8981,11 @@ function App() {
                         Total Properties
                         <input
                           type="number"
+                          min={
+                            editingProjectId && block.hasSold
+                              ? block.maxSoldIndex
+                              : 1
+                          }
                           value={block.totalProperties}
                           onChange={(e) => {
                             const nextBlocks = [...projectForm.blocks];
@@ -8886,14 +9000,28 @@ function App() {
                           }}
                           required
                         />
+                        {editingProjectId && block.hasSold && (
+                          <div className="helper-text">
+                            Minimum properties: {block.maxSoldIndex}
+                          </div>
+                        )}
                       </label>
                     </div>
                   ))}
+                  {editingProjectId && (
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={addProjectBlock}
+                    >
+                      Add Another Block
+                    </button>
+                  )}
                 </>
               )}
               {formError && <p className="form-error">{formError}</p>}
               <button className="primary-button" type="submit">
-                Save Project
+                {editingProjectId ? "Update Project" : "Save Project"}
               </button>
             </form>
           </div>
@@ -9227,6 +9355,18 @@ function App() {
               <h3 style={projectDetailTitleStyle}>
                 {selectedProject.name} Project Details
               </h3>
+              {hasPermission("projects:write") && (
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => {
+                    setShowProjectDetailModal(false);
+                    openEditProject(selectedProject.id);
+                  }}
+                >
+                  Edit
+                </button>
+              )}
               <button
                 className="ghost-button"
                 type="button"

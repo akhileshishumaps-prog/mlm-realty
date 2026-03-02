@@ -169,45 +169,30 @@ export const getStageSummary = (person, peopleIndex, sales) => {
     };
   }
 
-  let stage = 2;
   const entryDate = getStage2EntryDate(person.id, peopleIndex);
   const events = getStageEvents(person.id, peopleIndex, sales).filter(
     (event) => !entryDate || new Date(event.date) > new Date(entryDate)
   );
-  let progress = 0;
-  let nextTarget = STAGE_THRESHOLDS[0];
+  const totalProgress = 6 + events.length;
 
-  if (entryDate) {
-    let cursor = 0;
-    for (let i = 0; i < STAGE_THRESHOLDS.length; i += 1) {
-      const threshold = STAGE_THRESHOLDS[i];
-      const remaining = events.length - cursor;
-      if (remaining >= threshold) {
-        stage = 3 + i;
-        cursor += threshold;
-        nextTarget = STAGE_THRESHOLDS[i + 1] ?? null;
-        progress = nextTarget ? 0 : remaining - threshold;
-      } else {
-        progress = remaining;
-        nextTarget = threshold;
-        break;
-      }
+  let thresholdsMet = 0;
+  for (let i = 0; i < STAGE_THRESHOLDS.length; i += 1) {
+    if (totalProgress >= STAGE_THRESHOLDS[i]) {
+      thresholdsMet += 1;
+    } else {
+      break;
     }
   }
 
-  if (stage >= 9) {
-    return {
-      stage: 9,
-      directRecruits,
-      progress,
-      nextTarget: null,
-    };
-  }
+  const stage = Math.min(9, 2 + thresholdsMet);
+  const nextTarget = thresholdsMet < STAGE_THRESHOLDS.length
+    ? STAGE_THRESHOLDS[thresholdsMet]
+    : null;
 
   return {
     stage,
     directRecruits,
-    progress,
+    progress: totalProgress,
     nextTarget,
   };
 };

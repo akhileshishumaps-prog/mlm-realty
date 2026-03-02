@@ -344,3 +344,12 @@ export const createProject = async (payload) =>
       body: JSON.stringify(payload),
     })
   );
+
+export const updateProject = async (id, payload) =>
+  handleResponse(
+    await apiFetch(`/projects/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+  );
