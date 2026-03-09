@@ -276,6 +276,132 @@ const SearchableSelect = ({
   );
 };
 
+const DASHBOARD_RANGE_OPTIONS = [
+  { value: "lifetime", label: "Lifetime" },
+  { value: "last_5_years", label: "Last 5 Years" },
+  { value: "last_1_year", label: "Last 1 Year" },
+  { value: "last_6_months", label: "Last 6 Months" },
+  { value: "last_3_months", label: "Last 3 Months" },
+  { value: "last_1_month", label: "Last 1 Month" },
+  { value: "last_1_week", label: "Last 1 Week" },
+  { value: "yesterday", label: "Yesterday" },
+  { value: "today", label: "Today" },
+];
+
+const startOfDay = (value) => {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const endOfDay = (value) => {
+  const date = new Date(value);
+  date.setHours(23, 59, 59, 999);
+  return date;
+};
+
+const buildDashboardRange = (key) => {
+  if (!key || key === "lifetime") return { start: null, end: null };
+  const now = new Date();
+  const start = new Date(now);
+  switch (key) {
+    case "today":
+      return { start: startOfDay(now), end: endOfDay(now) };
+    case "yesterday": {
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      return { start: startOfDay(yesterday), end: endOfDay(yesterday) };
+    }
+    case "last_1_week":
+      start.setDate(start.getDate() - 7);
+      return { start: startOfDay(start), end: endOfDay(now) };
+    case "last_1_month":
+      start.setMonth(start.getMonth() - 1);
+      return { start: startOfDay(start), end: endOfDay(now) };
+    case "last_3_months":
+      start.setMonth(start.getMonth() - 3);
+      return { start: startOfDay(start), end: endOfDay(now) };
+    case "last_6_months":
+      start.setMonth(start.getMonth() - 6);
+      return { start: startOfDay(start), end: endOfDay(now) };
+    case "last_1_year":
+      start.setFullYear(start.getFullYear() - 1);
+      return { start: startOfDay(start), end: endOfDay(now) };
+    case "last_5_years":
+      start.setFullYear(start.getFullYear() - 5);
+      return { start: startOfDay(start), end: endOfDay(now) };
+    default:
+      return { start: null, end: null };
+  }
+};
+
+const buildReportRange = (startDate, endDate) => ({
+  start: startDate ? startOfDay(startDate) : null,
+  end: endDate ? endOfDay(endDate) : null,
+});
+
+const isDateWithinRange = (value, range) => {
+  if (!range?.start && !range?.end) return true;
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return false;
+  if (range.start && date < range.start) return false;
+  if (range.end && date > range.end) return false;
+  return true;
+};
+
+const normalizeConfigHistory = (history, fallback) => {
+  const safeFallback = fallback || { levelRates: [], personalRates: [] };
+  const cleaned = Array.isArray(history)
+    ? history
+        .map((entry) => ({
+          createdAt: entry.createdAt || entry.created_at || entry.created || "",
+          levelRates: entry.levelRates || entry.level_rates || [],
+          personalRates: entry.personalRates || entry.personal_rates || [],
+        }))
+        .filter((entry) => entry.createdAt)
+    : [];
+  cleaned.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  if (cleaned.length) return cleaned;
+  return [
+    {
+      createdAt: "1970-01-01T00:00:00.000Z",
+      levelRates: safeFallback.levelRates || [],
+      personalRates: safeFallback.personalRates || [],
+    },
+  ];
+};
+
+const getConfigForDate = (history, date) => {
+  if (!history.length) return null;
+  if (!date) return history[history.length - 1];
+  const target = new Date(date).getTime();
+  if (Number.isNaN(target)) return history[history.length - 1];
+  let selected = history[0];
+  for (const entry of history) {
+    const entryTime = new Date(entry.createdAt).getTime();
+    if (!Number.isNaN(entryTime) && entryTime <= target) {
+      selected = entry;
+    } else if (!Number.isNaN(entryTime) && entryTime > target) {
+      break;
+    }
+  }
+  return selected;
+};
+
+const buildUpline = (personId, peopleIndex, maxLevels = 9) => {
+  const upline = [];
+  let current = peopleIndex[personId];
+  let level = 1;
+  while (current && current.sponsorId && level <= maxLevels) {
+    const sponsor = peopleIndex[current.sponsorId];
+    if (!sponsor) break;
+    upline.push({ level, sponsor });
+    current = sponsor;
+    level += 1;
+  }
+  return upline;
+};
+
 function App() {
   const [activeView, setActiveView] = useState("dashboard");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -1100,6 +1226,7 @@ function App() {
   const [notifications, setNotifications] = useState([]);
   const [pendingUndo, setPendingUndo] = useState(null);
   const [reportsView, setReportsView] = useState("analytics");
+  const [dashboardRange, setDashboardRange] = useState("lifetime");
   const [peopleSearch, setPeopleSearch] = useState("");
   const [salesSearch, setSalesSearch] = useState("");
   const [peopleDueFilter, setPeopleDueFilter] = useState("all");
@@ -1826,13 +1953,26 @@ function App() {
 
   useEffect(() => {
     if (!authUser || fullDataLoaded || loadingFullData) return;
-    const heavyViews = new Set(["orgTree", "reports", "profile", "buybacks"]);
+    const heavyViews = new Set([
+      "dashboard",
+      "orgTree",
+      "reports",
+      "profile",
+      "buybacks",
+    ]);
     if (heavyViews.has(activeView)) {
       loadData();
     }
   }, [authUser, activeView, fullDataLoaded, loadingFullData, loadData]);
 
   const peopleIndex = useMemo(() => buildPeopleIndex(people), [people]);
+  const stageByPersonId = useMemo(() => {
+    const map = {};
+    people.forEach((person) => {
+      map[person.id] = getStageSummary(person, peopleIndex, sales).stage;
+    });
+    return map;
+  }, [people, peopleIndex, sales]);
   const salesIndex = useMemo(() => buildSalesIndex(sales), [sales]);
   const projectsById = useMemo(() => {
     const map = {};
@@ -1991,6 +2131,10 @@ function App() {
     });
     return stats;
   }, [projects, propertiesForProject]);
+  const normalizedConfigHistory = useMemo(
+    () => normalizeConfigHistory(commissionConfigHistory, commissionConfig),
+    [commissionConfigHistory, commissionConfig]
+  );
   const commissionSummary = useMemo(
     () =>
       calculateCommissionSummary(
@@ -2054,32 +2198,133 @@ function App() {
     setProjectForm((prev) => ({ ...prev, state: value, pincode: "" }));
   };
 
-  const dashboardStats = useMemo(() => {
-    if (dashboardSummary) {
-      return {
-        totalSales: dashboardSummary.totalSales || 0,
-        totalArea: dashboardSummary.totalArea || 0,
-        totalCommission: dashboardSummary.totalCommission || 0,
-        pendingBuybacks: Array.from(
-          { length: dashboardSummary.pendingBuybacks || 0 },
-          () => null
-        ),
+  const dashboardRangeWindow = useMemo(
+    () => buildDashboardRange(dashboardRange),
+    [dashboardRange]
+  );
+  const dashboardFilteredSales = useMemo(
+    () =>
+      sales.filter(
+        (sale) =>
+          sale.status !== "cancelled" &&
+          isDateWithinRange(sale.saleDate, dashboardRangeWindow)
+      ),
+    [sales, dashboardRangeWindow]
+  );
+  const dashboardFilteredInvestments = useMemo(
+    () =>
+      investmentsFlat.filter(
+        (inv) =>
+          inv.status !== "cancelled" &&
+          isDateWithinRange(inv.date, dashboardRangeWindow)
+      ),
+    [investmentsFlat, dashboardRangeWindow]
+  );
+
+  const calculateCommissionTotals = useCallback(
+    (range, personId = "all") => {
+      const totals = {};
+      people.forEach((person) => {
+        totals[person.id] = 0;
+      });
+
+      const getSalePaidAmount = (sale) => {
+        if (!sale) return 0;
+        if (typeof sale.paidAmount === "number") return sale.paidAmount;
+        if (Array.isArray(sale.payments)) return sumPayments(sale.payments);
+        return 0;
       };
-    }
-    const activeSales = sales.filter((sale) => sale.status !== "cancelled");
-    const totalSales = activeSales.reduce(
+
+      const isSalePaid = (sale) => {
+        if (!sale || sale.status === "cancelled") return false;
+        const total = Number(sale.totalAmount || 0);
+        if (!total) return false;
+        return getSalePaidAmount(sale) >= total;
+      };
+
+      const addCommission = (id, amount) => {
+        if (!id || !amount) return;
+        totals[id] = (totals[id] || 0) + amount;
+      };
+
+      sales.forEach((sale) => {
+        if (!isSalePaid(sale)) return;
+        if (!isDateWithinRange(sale.saleDate, range)) return;
+        const stage = stageByPersonId[sale.sellerId] || 1;
+        const configForSale = getConfigForDate(
+          normalizedConfigHistory,
+          sale.saleDate
+        );
+        const rate = configForSale?.personalRates?.[stage - 1] ?? 0;
+        addCommission(sale.sellerId, sale.areaSqYd * rate);
+      });
+
+      people.forEach((person) => {
+        if (!person.sponsorId) return;
+        if (person.isSpecial) return;
+        const paidInvestments = (person.investments || []).filter(
+          (inv) => inv.paymentStatus === "paid"
+        );
+        if (!paidInvestments.length) return;
+        const investment = [...paidInvestments].sort(
+          (a, b) => new Date(a.date) - new Date(b.date)
+        )[0];
+        if (!investment) return;
+        if (!isDateWithinRange(investment.date, range)) return;
+        const area = investment.areaSqYd || 0;
+        if (!area) return;
+        const configForInvestment = getConfigForDate(
+          normalizedConfigHistory,
+          investment.date
+        );
+        const upline = buildUpline(person.id, peopleIndex, 9);
+        upline.forEach(({ level, sponsor }) => {
+          const rate = configForInvestment?.levelRates?.[level - 1] ?? 0;
+          addCommission(sponsor.id, area * rate);
+        });
+      });
+
+      if (personId && personId !== "all") {
+        return {
+          total: totals[personId] || 0,
+          byPerson: totals,
+        };
+      }
+
+      const total = Object.values(totals).reduce((acc, val) => acc + val, 0);
+      return { total, byPerson: totals };
+    },
+    [people, sales, stageByPersonId, normalizedConfigHistory, peopleIndex]
+  );
+
+  const dashboardCommissionTotals = useMemo(
+    () => calculateCommissionTotals(dashboardRangeWindow, "all"),
+    [calculateCommissionTotals, dashboardRangeWindow]
+  );
+
+  const dashboardStats = useMemo(() => {
+    const totalPropertySales = dashboardFilteredSales.reduce(
       (acc, sale) => acc + sale.totalAmount,
       0
     );
-    const totalArea = activeSales.reduce(
+    const totalInvestment = dashboardFilteredInvestments.reduce(
+      (acc, inv) => acc + inv.amount,
+      0
+    );
+    const totalSale = totalPropertySales + totalInvestment;
+    const totalArea = dashboardFilteredSales.reduce(
       (acc, sale) => acc + sale.areaSqYd,
       0
     );
-    const totalCommission = commissionSummary.totalCommission;
-    const pendingBuybacks = people.flatMap((person) =>
-      person.investments
+    const totalCommission = dashboardCommissionTotals.total || 0;
+    const companyEarning = totalSale - totalCommission;
+    const pendingInvestmentBuybacks = people.flatMap((person) =>
+      (person.investments || [])
         .filter(
-          (inv) => inv.status === "pending" && inv.paymentStatus === "paid"
+          (inv) =>
+            inv.status === "pending" &&
+            inv.paymentStatus === "paid" &&
+            isDateWithinRange(inv.date, dashboardRangeWindow)
         )
         .map((inv) => ({ person, inv }))
     );
@@ -2089,16 +2334,27 @@ function App() {
           sale.buybackEnabled &&
           sale.buybackStatus !== "paid" &&
           sale.status !== "cancelled" &&
-          sumPayments(sale.payments || []) >= sale.totalAmount
+          sumPayments(sale.payments || []) >= sale.totalAmount &&
+          isDateWithinRange(sale.saleDate, dashboardRangeWindow)
       )
       .map((sale) => ({ sale }));
     return {
-      totalSales,
+      totalSale,
+      totalPropertySales,
+      totalInvestment,
       totalArea,
       totalCommission,
-      pendingBuybacks: [...pendingBuybacks, ...pendingSaleBuybacks],
+      companyEarning,
+      pendingBuybacks: [...pendingInvestmentBuybacks, ...pendingSaleBuybacks],
     };
-  }, [people, sales, commissionSummary, dashboardSummary]);
+  }, [
+    dashboardFilteredSales,
+    dashboardFilteredInvestments,
+    dashboardCommissionTotals,
+    dashboardRangeWindow,
+    people,
+    sales,
+  ]);
 
   const filteredProjects = useMemo(() => {
     if (!projectSearch) return projects;
@@ -2332,6 +2588,48 @@ function App() {
       return true;
     });
   }, [sales, reportFilters]);
+
+  const filteredInvestments = useMemo(() => {
+    const { startDate, endDate, personId } = reportFilters;
+    return investmentsFlat.filter((inv) => {
+      if (inv.status === "cancelled") return false;
+      if (personId && personId !== "all" && inv.personId !== personId) return false;
+      const invDate = new Date(inv.date);
+      if (startDate && invDate < new Date(startDate)) return false;
+      if (endDate && invDate > new Date(endDate)) return false;
+      return true;
+    });
+  }, [investmentsFlat, reportFilters]);
+
+  const reportDateRange = useMemo(
+    () => buildReportRange(reportFilters.startDate, reportFilters.endDate),
+    [reportFilters.startDate, reportFilters.endDate]
+  );
+  const reportCommissionTotals = useMemo(
+    () => calculateCommissionTotals(reportDateRange, reportFilters.personId),
+    [calculateCommissionTotals, reportDateRange, reportFilters.personId]
+  );
+
+  const analyticsTotals = useMemo(() => {
+    const totalPropertySales = filteredSales.reduce(
+      (acc, sale) => acc + sale.totalAmount,
+      0
+    );
+    const totalInvestment = filteredInvestments.reduce(
+      (acc, inv) => acc + inv.amount,
+      0
+    );
+    const totalSale = totalPropertySales + totalInvestment;
+    const totalCommission = reportCommissionTotals.total || 0;
+    const companyEarning = totalSale - totalCommission;
+    return {
+      totalPropertySales,
+      totalInvestment,
+      totalSale,
+      totalCommission,
+      companyEarning,
+    };
+  }, [filteredSales, filteredInvestments, reportCommissionTotals]);
 
   const salesByMonth = useMemo(() => {
     const buckets = {};
@@ -4485,20 +4783,65 @@ function App() {
         </div>
         {activeView === "dashboard" && (
           <section className="grid">
+            <div className="card wide-card">
+              <div className="card-header stacked-header">
+                <div>
+                  <h3>Dashboard Summary</h3>
+                  <p className="muted">
+                    Review totals for the selected time window.
+                  </p>
+                </div>
+                <div className="filter-grid compact">
+                  <label>
+                    Date Range
+                    <select
+                      className="select"
+                      value={dashboardRange}
+                      onChange={(event) => setDashboardRange(event.target.value)}
+                    >
+                      {DASHBOARD_RANGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </div>
+            </div>
             <div className="card stat-card">
-              <p>Total Sales Value</p>
-              <h2>{formatCurrency(dashboardStats.totalSales)}</h2>
-              <span className="muted">Across all properties</span>
+              <p>Total Sale (Sales + Investment)</p>
+              <h2>{formatCurrency(dashboardStats.totalSale)}</h2>
+              <span className="muted">Combined property + investment value</span>
+            </div>
+            <div className="card stat-card">
+              <p>Company Earning</p>
+              <h2>
+                {canSeeCommission
+                  ? formatCurrency(dashboardStats.companyEarning)
+                  : "Restricted"}
+              </h2>
+              <span className="muted">Total sale minus commissions</span>
+            </div>
+            <div className="card stat-card">
+              <p>Total Property Sales</p>
+              <h2>{formatCurrency(dashboardStats.totalPropertySales)}</h2>
+              <span className="muted">Active property sales</span>
+            </div>
+            <div className="card stat-card">
+              <p>Total Investment</p>
+              <h2>{formatCurrency(dashboardStats.totalInvestment)}</h2>
+              <span className="muted">Active member investments</span>
+            </div>
+            <div className="card stat-card">
+              <p>Total Commission</p>
+              <h2>{renderCommission(dashboardStats.totalCommission)}</h2>
+              <span className="muted">Earned commission total</span>
             </div>
             <div className="card stat-card">
               <p>Total Commission Area Sold</p>
               <h2>{dashboardStats.totalArea.toLocaleString()} sq yd</h2>
               <span className="muted">Sold by all executives</span>
-            </div>
-            <div className="card stat-card">
-              <p>Total Commission Generated</p>
-              <h2>{renderCommission(dashboardStats.totalCommission)}</h2>
-              <span className="muted">Levels and personal rates</span>
             </div>
             <div className="card stat-card">
               <p>Pending Buybacks</p>
@@ -6211,21 +6554,34 @@ function App() {
                         <strong>{filteredPeople.length}</strong>
                       </div>
                       <div className="kpi-row">
-                        <span>Total Sales</span>
+                        <span>Total Sale (Sales + Investment)</span>
+                        <strong>{formatCurrency(analyticsTotals.totalSale)}</strong>
+                      </div>
+                      <div className="kpi-row">
+                        <span>Company Earning</span>
                         <strong>
-                          {formatCurrency(
-                            filteredSales.reduce(
-                              (acc, sale) => acc + sale.totalAmount,
-                              0
-                            )
-                          )}
+                          {canSeeCommission
+                            ? formatCurrency(analyticsTotals.companyEarning)
+                            : "Restricted"}
+                        </strong>
+                      </div>
+                      <div className="kpi-row">
+                        <span>Total Property Sales</span>
+                        <strong>
+                          {formatCurrency(analyticsTotals.totalPropertySales)}
+                        </strong>
+                      </div>
+                      <div className="kpi-row">
+                        <span>Total Investment</span>
+                        <strong>
+                          {formatCurrency(analyticsTotals.totalInvestment)}
                         </strong>
                       </div>
                       <div className="kpi-row">
                         <span>Total Commission</span>
                         <strong>
                           {canSeeCommission
-                            ? formatCurrency(commissionsSummary.earned)
+                            ? formatCurrency(analyticsTotals.totalCommission)
                             : "Restricted"}
                         </strong>
                       </div>
