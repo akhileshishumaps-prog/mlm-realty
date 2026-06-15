@@ -1029,8 +1029,13 @@
   color: var(--ink-900);
 }
 
-.select-option:hover {
+.select-option:hover:not(:disabled) {
   background: #f4eee6;
+}
+
+.select-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .select-empty {
@@ -1246,6 +1251,19 @@
   color: var(--ink-500);
   border-top: 1px solid #e5e9f0;
   padding-top: 8px;
+}
+
+.sale-property-panel {
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: #f9fafb;
+}
+
+.sale-property-panel .modal-divider {
+  border-top: 1px dashed #d0d7e3;
+  margin-top: 8px;
 }
 
 .form-error {

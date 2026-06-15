@@ -50,11 +50,21 @@ export const buildPeopleIndex = (people) => {
   return index;
 };
 
-export const buildSalesIndex = (sales) => {
+export const buildSalesIndex = (sales, peopleIndex) => {
   const index = {};
   sales.forEach((sale) => {
     if (sale.status === "cancelled") return;
     if (!isSalePaid(sale)) return;
+    if (peopleIndex) {
+      const seller = peopleIndex[sale.sellerId];
+      if (seller) {
+        const normCustomerPhone = String(sale.customerPhone || "").replace(/\D/g, "");
+        const normSellerPhone = String(seller.phone || "").replace(/\D/g, "");
+        const isSelfPurchase = (sale.customerId && sale.customerId === seller.id) ||
+                               (normCustomerPhone && normCustomerPhone === normSellerPhone);
+        if (isSelfPurchase) return;
+      }
+    }
     if (!index[sale.sellerId]) {
       index[sale.sellerId] = { totalArea: 0, lastSale: "-" };
     }
@@ -258,6 +268,7 @@ export const calculateCommissionSummary = (
       person,
       stage: stageSummary.stage,
       personalRate,
+      personalCommission: 0,
       totalCommission: 0,
       totalPaid: paidTotals[person.id] || 0,
       maxLevel: getDownlineDepth(person.id, peopleIndex),
@@ -268,11 +279,17 @@ export const calculateCommissionSummary = (
     if (!isSalePaid(sale)) return;
     const seller = peopleIndex[sale.sellerId];
     if (!seller) return;
+    const normCustomerPhone = String(sale.customerPhone || "").replace(/\D/g, "");
+    const normSellerPhone = String(seller.phone || "").replace(/\D/g, "");
+    const isSelfPurchase = (sale.customerId && sale.customerId === seller.id) ||
+                           (normCustomerPhone && normCustomerPhone === normSellerPhone);
+    if (isSelfPurchase) return;
     const stageSummary = getStageSummary(seller, peopleIndex, sales);
     const configForSale = getConfigForDate(normalizedHistory, sale.saleDate);
     const rate =
       configForSale?.personalRates?.[stageSummary.stage - 1] ?? 0;
     const selfCommission = sale.areaSqYd * rate;
+    commissionByPerson[seller.id].personalCommission += selfCommission;
     commissionByPerson[seller.id].totalCommission += selfCommission;
   });
 

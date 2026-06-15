@@ -84,6 +84,11 @@ export const initDb = async (db) => {
           console.error("Failed to add people is_special column", err);
         }
       });
+      sqlite.run("ALTER TABLE people ADD COLUMN address TEXT", (err) => {
+        if (err && !err.message.includes("duplicate column")) {
+          console.error("Failed to add people address column", err);
+        }
+      });
       sqlite.run("ALTER TABLE investments ADD COLUMN paid_amount INTEGER", (err) => {
         if (err && !err.message.includes("duplicate column")) {
           console.error("Failed to add paid_amount column", err);
@@ -629,6 +634,7 @@ export const initDb = async (db) => {
     "ALTER TABLE people ADD COLUMN IF NOT EXISTS sponsor_stage INTEGER",
     "ALTER TABLE people ADD COLUMN IF NOT EXISTS status TEXT",
     "ALTER TABLE people ADD COLUMN IF NOT EXISTS is_special INTEGER",
+    "ALTER TABLE people ADD COLUMN IF NOT EXISTS address TEXT",
     "ALTER TABLE investments ADD COLUMN IF NOT EXISTS paid_amount INTEGER",
     "ALTER TABLE investments ADD COLUMN IF NOT EXISTS paid_date TEXT",
     "ALTER TABLE investments ADD COLUMN IF NOT EXISTS area_sq_yd INTEGER",

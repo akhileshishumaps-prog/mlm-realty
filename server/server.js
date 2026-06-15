@@ -1023,7 +1023,7 @@ app.get("/dashboard/summary", requirePermission("dashboard:read"), async (req, r
     "SELECT COUNT(*) as count FROM investments WHERE status = 'pending' AND payment_status = 'paid'"
   );
   const recentSales = await allAsync(
-    `SELECT s.*, p.name as seller_name, pr.name as project_name, b.name as block_name, prop.name as property_name,
+    `SELECT s.*, p.name as seller_name, pr.name as project_name, b.name as block_name, COALESCE(prop.name, s.property_name) as property_name,
             (SELECT COALESCE(SUM(amount),0) FROM payments WHERE sale_id = s.id) as paid_amount
      FROM sales s
      LEFT JOIN people p ON p.id = s.seller_id
@@ -1042,7 +1042,10 @@ app.get("/dashboard/summary", requirePermission("dashboard:read"), async (req, r
       await Promise.all([
         allAsync("SELECT * FROM people"),
         allAsync("SELECT * FROM investments"),
-        allAsync("SELECT * FROM sales"),
+        allAsync(`SELECT s.*, c.phone AS customer_phone, c.name AS customer_name, c.address AS customer_address, p.phone AS seller_phone
+                  FROM sales s
+                  LEFT JOIN customers c ON s.customer_id = c.id
+                  LEFT JOIN people p ON s.seller_id = p.id`),
         allAsync("SELECT * FROM commission_payments"),
       ]);
     const config = await getCommissionConfig();
@@ -1079,7 +1082,7 @@ app.get("/dashboard/summary", requirePermission("dashboard:read"), async (req, r
 
 app.get("/people/lookup", requirePermission("people:read"), async (_req, res) => {
   const rows = await allAsync(
-    "SELECT id, name, sponsor_id FROM people ORDER BY name ASC"
+    "SELECT id, name, sponsor_id, phone, address, status FROM people ORDER BY name ASC"
   );
   res.json(rows);
 });
@@ -1105,7 +1108,10 @@ app.get("/people-summary", requirePermission("people:read"), async (req, res) =>
     await Promise.all([
       allAsync("SELECT * FROM people"),
       allAsync("SELECT * FROM investments"),
-      allAsync("SELECT * FROM sales"),
+      allAsync(`SELECT s.*, c.phone AS customer_phone, c.name AS customer_name, c.address AS customer_address, p.phone AS seller_phone
+                FROM sales s
+                LEFT JOIN customers c ON s.customer_id = c.id
+                LEFT JOIN people p ON s.seller_id = p.id`),
       allAsync("SELECT * FROM commission_payments"),
     ]);
   const investmentPayments = await allAsync(
@@ -1241,7 +1247,10 @@ app.get("/commissions-summary", requirePermission("commissions:read"), async (re
     await Promise.all([
       allAsync("SELECT * FROM people"),
       allAsync("SELECT * FROM investments"),
-      allAsync("SELECT * FROM sales"),
+      allAsync(`SELECT s.*, c.phone AS customer_phone, c.name AS customer_name, c.address AS customer_address, p.phone AS seller_phone
+                FROM sales s
+                LEFT JOIN customers c ON s.customer_id = c.id
+                LEFT JOIN people p ON s.seller_id = p.id`),
       allAsync("SELECT * FROM commission_payments"),
     ]);
   const config = await getCommissionConfig();
@@ -1297,7 +1306,10 @@ app.get("/commissions/balance", requirePermission("commissions:read"), async (re
     await Promise.all([
       allAsync("SELECT * FROM people"),
       allAsync("SELECT * FROM investments"),
-      allAsync("SELECT * FROM sales"),
+      allAsync(`SELECT s.*, c.phone AS customer_phone, c.name AS customer_name, c.address AS customer_address, p.phone AS seller_phone
+                FROM sales s
+                LEFT JOIN customers c ON s.customer_id = c.id
+                LEFT JOIN people p ON s.seller_id = p.id`),
       allAsync("SELECT * FROM commission_payments"),
     ]);
   const config = await getCommissionConfig();
@@ -1359,7 +1371,7 @@ app.get("/sales-summary", requirePermission("sales:read"), async (req, res) => {
       ? "ORDER BY pr.name ASC"
       : "ORDER BY s.sale_date DESC";
 
-  const baseQuery = `SELECT s.*, p.name as seller_name, pr.name as project_name, b.name as block_name, prop.name as property_name,
+  const baseQuery = `SELECT s.*, p.name as seller_name, pr.name as project_name, b.name as block_name, COALESCE(prop.name, s.property_name) as property_name,
             c.name as customer_name, c.phone as customer_phone, c.address as customer_address,
             (SELECT COALESCE(SUM(amount),0) FROM payments WHERE sale_id = s.id) as paid_amount
      FROM sales s
@@ -2397,7 +2409,7 @@ app.get("/people", requirePermission("people:read"), async (_req, res) => {
 });
 
 app.post("/people", requirePermission("people:write"), async (req, res) => {
-  const { name, sponsor_id, sponsor_stage, phone, join_date, is_special } = req.body;
+  const { name, sponsor_id, sponsor_stage, phone, join_date, is_special, address } = req.body;
   const trimmedName = String(name || "").trim();
   const specialFlag = Number(is_special || 0) === 1 ? 1 : 0;
   if (specialFlag && String(req.user?.role || "").toLowerCase() !== "owner") {
@@ -2426,7 +2438,7 @@ app.post("/people", requirePermission("people:write"), async (req, res) => {
   const id = randomUUID();
   const status = specialFlag ? "active" : "pending";
   await runAsync(
-    "INSERT INTO people (id, name, sponsor_id, sponsor_stage, phone, join_date, status, is_special) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO people (id, name, sponsor_id, sponsor_stage, phone, join_date, status, is_special, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [
       id,
       trimmedName,
@@ -2436,6 +2448,7 @@ app.post("/people", requirePermission("people:write"), async (req, res) => {
       join_date,
       status,
       specialFlag,
+      address || null,
     ]
   );
   await logActivity({
@@ -2450,6 +2463,7 @@ app.post("/people", requirePermission("people:write"), async (req, res) => {
       join_date,
       status,
       is_special: specialFlag,
+      address,
     },
   });
   res.json({ id });
@@ -2457,7 +2471,7 @@ app.post("/people", requirePermission("people:write"), async (req, res) => {
 
 app.put("/people/:id", requirePermission("people:write"), async (req, res) => {
   const { id } = req.params;
-  const { name, phone, join_date } = req.body;
+  const { name, phone, join_date, address } = req.body;
   const trimmedName = String(name || "").trim();
   const existing = await getAsync(
     "SELECT id FROM people WHERE lower(trim(name)) = lower(trim(?)) AND id <> ?",
@@ -2468,19 +2482,20 @@ app.put("/people/:id", requirePermission("people:write"), async (req, res) => {
   }
   const current = await getAsync("SELECT * FROM people WHERE id = ?", [id]);
   await runAsync(
-    "UPDATE people SET name = ?, phone = ?, join_date = ? WHERE id = ?",
-    [trimmedName, phone || null, join_date, id]
+    "UPDATE people SET name = ?, phone = ?, join_date = ?, address = ? WHERE id = ?",
+    [trimmedName, phone || null, join_date, address || null, id]
   );
   await logActivity({
     action_type: "UPDATE_PERSON",
     entity_type: "person",
     entity_id: id,
-    payload: { name: trimmedName, phone, join_date },
+    payload: { name: trimmedName, phone, join_date, address },
     undo_payload: current
       ? {
           name: current.name,
           phone: current.phone,
           join_date: current.join_date,
+          address: current.address,
         }
       : null,
   });
@@ -2518,13 +2533,32 @@ app.get("/sales", requirePermission("sales:read"), async (_req, res) => {
   if (cancelledCount) {
     clearCache();
   }
-  const rows = await allAsync("SELECT * FROM sales ORDER BY sale_date DESC");
+  const rows = await allAsync(
+    `SELECT s.*, c.phone AS customer_phone, c.name AS customer_name, c.address AS customer_address, p.phone AS seller_phone,
+            prop.name AS project_property_name, b.name AS project_block_name
+     FROM sales s
+     LEFT JOIN customers c ON s.customer_id = c.id
+     LEFT JOIN people p ON s.seller_id = p.id
+     LEFT JOIN project_properties prop ON prop.id = s.property_id
+     LEFT JOIN project_blocks b ON b.id = s.block_id
+     ORDER BY s.sale_date DESC`
+  );
   res.json(rows);
 });
 
 app.get("/sales/:id", requirePermission("sales:read"), async (req, res) => {
   const { id } = req.params;
-  const sale = await getAsync("SELECT * FROM sales WHERE id = ?", [id]);
+  const sale = await getAsync(
+    `SELECT s.*, c.phone AS customer_phone, c.name AS customer_name, c.address AS customer_address, p.phone AS seller_phone,
+            prop.name AS project_property_name, b.name AS project_block_name
+     FROM sales s
+     LEFT JOIN customers c ON s.customer_id = c.id
+     LEFT JOIN people p ON s.seller_id = p.id
+     LEFT JOIN project_properties prop ON prop.id = s.property_id
+     LEFT JOIN project_blocks b ON b.id = s.block_id
+     WHERE s.id = ?`,
+    [id]
+  );
   if (!sale) {
     return res.status(404).json({ error: "Sale not found." });
   }
@@ -2636,7 +2670,7 @@ app.get("/customers/:id", requirePermission("sales:read"), async (req, res) => {
     return res.status(404).json({ error: "Customer not found." });
   }
   const sales = await allAsync(
-    `SELECT s.*, pr.name as project_name, b.name as block_name, prop.name as property_name
+    `SELECT s.*, pr.name as project_name, b.name as block_name, COALESCE(prop.name, s.property_name) as property_name
      FROM sales s
      LEFT JOIN projects pr ON pr.id = s.project_id
      LEFT JOIN project_blocks b ON b.id = s.block_id
@@ -2646,6 +2680,46 @@ app.get("/customers/:id", requirePermission("sales:read"), async (req, res) => {
     [id]
   );
   res.json({ customer, sales });
+});
+
+app.put("/customers/:id", requirePermission("sales:write"), async (req, res) => {
+  const { id } = req.params;
+  const { name, phone, address } = req.body;
+  const trimmedName = String(name || "").trim();
+  const cleanedPhone = normalizePhone(phone);
+  if (!trimmedName) {
+    return res.status(400).json({ error: "Customer name is required." });
+  }
+  if (!cleanedPhone || cleanedPhone.length < 10) {
+    return res.status(400).json({ error: "Customer phone must include 10 digits." });
+  }
+  const existing = await getAsync(
+    "SELECT id FROM customers WHERE phone = ? AND id <> ?",
+    [cleanedPhone, id]
+  );
+  if (existing) {
+    return res.status(400).json({ error: "Customer phone already exists on another profile." });
+  }
+  const current = await getAsync("SELECT * FROM customers WHERE id = ?", [id]);
+  if (!current) {
+    return res.status(404).json({ error: "Customer not found." });
+  }
+  await runAsync(
+    "UPDATE customers SET name = ?, phone = ?, address = ? WHERE id = ?",
+    [trimmedName, cleanedPhone, address || null, id]
+  );
+  await logActivity({
+    action_type: "UPDATE_CUSTOMER",
+    entity_type: "customer",
+    entity_id: id,
+    payload: { name: trimmedName, phone: cleanedPhone, address },
+    undo_payload: {
+      name: current.name,
+      phone: current.phone,
+      address: current.address,
+    },
+  });
+  res.json({ ok: true });
 });
 
 app.post("/sales", requirePermission("sales:write"), async (req, res) => {
@@ -2945,7 +3019,11 @@ app.get(
     clearCache();
   }
   const rows = await allAsync(
-    "SELECT * FROM investments ORDER BY date DESC"
+    `SELECT inv.*, prop.name AS project_property_name, b.name AS project_block_name
+     FROM investments inv
+     LEFT JOIN project_properties prop ON prop.id = inv.property_id
+     LEFT JOIN project_blocks b ON b.id = inv.block_id
+     ORDER BY inv.date DESC`
   );
   res.json(rows);
 });

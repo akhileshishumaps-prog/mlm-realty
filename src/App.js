@@ -29,6 +29,7 @@ import {
   fetchSalesSummary,
   fetchCustomers,
   fetchCustomerDetail,
+  updateCustomer,
   fetchInvestmentPayments,
   fetchCommissionSummary,
   fetchCommissionBalance,
@@ -260,6 +261,7 @@ const SearchableSelect = ({
                 key={opt.value || opt.label}
                 type="button"
                 className="select-option"
+                disabled={opt.disabled}
                 onClick={() => handleSelect(opt)}
               >
                 {opt.label}
@@ -732,6 +734,36 @@ function App() {
     run();
   };
 
+  const handleUpdateCustomer = async (event) => {
+    event.preventDefault();
+    setCustomerEditError("");
+    const trimmedName = customerEditForm.name.trim();
+    const phoneDigits = customerEditForm.phone.replace(/\D/g, "");
+    if (!trimmedName) {
+      setCustomerEditError("Customer name is required.");
+      return;
+    }
+    if (phoneDigits.length !== 10) {
+      setCustomerEditError("Phone number must include 10 digits.");
+      return;
+    }
+    try {
+      await updateCustomer(selectedCustomerDetail.id, {
+        name: trimmedName,
+        phone: `+91${phoneDigits}`,
+        address: customerEditForm.address || null,
+      });
+      const data = await fetchCustomerDetail(selectedCustomerDetail.id);
+      setSelectedCustomerDetail(data.customer || null);
+      await loadData();
+      setIsCustomerEditMode(false);
+      addNotification("Customer updated successfully.");
+    } catch (err) {
+      console.error(err);
+      setCustomerEditError(err.message || "Failed to update customer.");
+    }
+  };
+
 
   const openPersonProfile = (personId) => {
     if (!personId) return;
@@ -1181,6 +1213,9 @@ function App() {
   const [showCustomerDetailModal, setShowCustomerDetailModal] = useState(false);
   const [selectedCustomerDetail, setSelectedCustomerDetail] = useState(null);
   const [selectedCustomerSales, setSelectedCustomerSales] = useState([]);
+  const [isCustomerEditMode, setIsCustomerEditMode] = useState(false);
+  const [customerEditForm, setCustomerEditForm] = useState({ name: "", phone: "", address: "" });
+  const [customerEditError, setCustomerEditError] = useState("");
   const [editingSaleId, setEditingSaleId] = useState(null);
   const [editingPersonId, setEditingPersonId] = useState(null);
   const [showEditPersonModal, setShowEditPersonModal] = useState(false);
@@ -1291,6 +1326,7 @@ function App() {
     projectId: "",
     blockId: "",
     propertyId: "",
+    address: "",
   });
   const [personNameError, setPersonNameError] = useState("");
 
@@ -1302,9 +1338,24 @@ function App() {
     investmentActualArea: "",
     investmentId: "",
     returnPercent: "",
+    address: "",
   });
   const [editPersonNameError, setEditPersonNameError] = useState("");
 
+  const makeBlankProperty = () => ({
+    _key: Math.random().toString(36).slice(2),
+    projectId: "",
+    blockId: "",
+    propertyId: "",
+    areaSqYd: "",
+    actualAreaSqYd: "",
+    totalAmount: "",
+    saleDate: "",
+    buybackEnabled: false,
+    buybackMonths: "",
+    buybackReturnPercent: "",
+    payments: [{ amount: "", date: "" }],
+  });
   const [saleForm, setSaleForm] = useState({
     sellerId: "",
     projectId: "",
@@ -1322,6 +1373,7 @@ function App() {
     buybackReturnPercent: "",
     payments: [{ amount: "", date: "" }],
     existingPayments: [],
+    properties: [null],
   });
   
   const [projectForm, setProjectForm] = useState({
@@ -1438,6 +1490,8 @@ function App() {
           projectId: inv.project_id || "",
           blockId: inv.block_id || "",
           propertyId: inv.property_id || "",
+          projectPropertyName: inv.project_property_name || "",
+          projectBlockName: inv.project_block_name || "",
           status: inv.status,
           paymentStatus,
           paymentPercent,
@@ -1487,6 +1541,10 @@ function App() {
         blockId: sale.block_id || "",
         propertyId: sale.property_id || "",
         customerId: sale.customer_id || "",
+        customerPhone: sale.customer_phone || "",
+        sellerPhone: sale.seller_phone || "",
+        projectPropertyName: sale.project_property_name || "",
+        projectBlockName: sale.project_block_name || "",
         buybackEnabled: Number(sale.buyback_enabled || 0) === 1,
         buybackMonths: sale.buyback_months ?? null,
         buybackReturnPercent: sale.buyback_return_percent ?? null,
@@ -1973,7 +2031,7 @@ function App() {
     });
     return map;
   }, [people, peopleIndex, sales]);
-  const salesIndex = useMemo(() => buildSalesIndex(sales), [sales]);
+  const salesIndex = useMemo(() => buildSalesIndex(sales, peopleIndex), [sales, peopleIndex]);
   const projectsById = useMemo(() => {
     const map = {};
     projects.forEach((project) => {
@@ -1995,16 +2053,25 @@ function App() {
       .replace(/^91/, "")
       .slice(0, 10);
     if (digits.length !== 10) return null;
-    return (
-      customers.find((customer) => {
-        const customerDigits = String(customer.phone || "")
-          .replace(/\D/g, "")
-          .replace(/^91/, "")
-          .slice(0, 10);
-        return customerDigits === digits;
-      }) || null
-    );
-  }, [saleForm.customerPhone, customers]);
+    const customerMatch = customers.find((customer) => {
+      const customerDigits = String(customer.phone || "")
+        .replace(/\D/g, "")
+        .replace(/^91/, "")
+        .slice(0, 10);
+      return customerDigits === digits;
+    });
+    if (customerMatch) return { ...customerMatch, matchType: "customer" };
+    const personMatch = peopleLookup.find((person) => {
+      if (person.status !== "active") return false;
+      const personDigits = String(person.phone || "")
+        .replace(/\D/g, "")
+        .replace(/^91/, "")
+        .slice(0, 10);
+      return personDigits === digits;
+    });
+    if (personMatch) return { ...personMatch, matchType: "person" };
+    return null;
+  }, [saleForm.customerPhone, customers, peopleLookup]);
   const blocksById = useMemo(() => {
     const map = {};
     projectBlocks.forEach((block) => {
@@ -2250,6 +2317,14 @@ function App() {
       sales.forEach((sale) => {
         if (!isSalePaid(sale)) return;
         if (!isDateWithinRange(sale.saleDate, range)) return;
+        const seller = peopleIndex[sale.sellerId];
+        if (seller) {
+          const normCustomerPhone = String(sale.customerPhone || "").replace(/\D/g, "");
+          const normSellerPhone = String(seller.phone || "").replace(/\D/g, "");
+          const isSelfPurchase = (sale.customerId && sale.customerId === seller.id) ||
+                                 (normCustomerPhone && normCustomerPhone === normSellerPhone);
+          if (isSelfPurchase) return;
+        }
         const stage = stageByPersonId[sale.sellerId] || 1;
         const configForSale = getConfigForDate(
           normalizedConfigHistory,
@@ -2766,12 +2841,8 @@ function App() {
 
   const getContributionToRoot = (rootId, personId) => {
     if (!rootId) return 0;
-    const areaSold = salesIndex[personId]?.totalArea || 0;
     if (rootId === personId) {
-      const stage = getStageSummary(peopleIndex[rootId], peopleIndex, sales)
-        .stage;
-      const selfRate = commissionConfig.personalRates?.[stage - 1] || 0;
-      return areaSold * selfRate;
+      return commissionSummary.byPerson[rootId]?.personalCommission || 0;
     }
     const level = getLevelDistance(rootId, personId, 9);
     if (!level) return 0;
@@ -2814,34 +2885,48 @@ function App() {
     commissionDetailPayments.length > 0 ? commissionDetailPayments[0] : null;
   const commissionDetailSales = useMemo(() => {
     if (!commissionDetailId) return [];
-    const personalRate = commissionDetailSummary?.personalRate ?? 0;
     return sales
-      .filter(
-        (sale) => sale.sellerId === commissionDetailId && isSalePaid(sale)
-      )
-      .map((sale) => ({
-        id: sale.id,
-        date: sale.saleDate,
-        projectName: sale.projectId
-          ? projectsById[sale.projectId]?.name || ""
-          : sale.propertyName || "",
-        blockName: sale.blockId ? blocksById[sale.blockId]?.name || "" : "",
-        propertyName: sale.propertyId
-          ? propertiesById[sale.propertyId]?.name || sale.propertyName || ""
-          : sale.propertyName || "",
-        areaSqYd: sale.areaSqYd,
-        rate: personalRate,
-        commission: sale.areaSqYd * personalRate,
-      }))
+      .filter((sale) => {
+        if (sale.sellerId !== commissionDetailId || !isSalePaid(sale)) return false;
+        const seller = peopleIndex[commissionDetailId];
+        if (seller) {
+          const normCustomerPhone = String(sale.customerPhone || "").replace(/\D/g, "");
+          const normSellerPhone = String(seller.phone || "").replace(/\D/g, "");
+          const isSelfPurchase = (sale.customerId && sale.customerId === seller.id) ||
+                                 (normCustomerPhone && normCustomerPhone === normSellerPhone);
+          if (isSelfPurchase) return false;
+        }
+        return true;
+      })
+      .map((sale) => {
+        const stage = getStageSummary(peopleIndex[commissionDetailId], peopleIndex, sales).stage;
+        const configForSale = getConfigForDate(normalizedConfigHistory, sale.saleDate);
+        const rate = configForSale?.personalRates?.[stage - 1] ?? 0;
+        return {
+          id: sale.id,
+          date: sale.saleDate,
+          projectName: sale.projectId
+            ? projectsById[sale.projectId]?.name || ""
+            : sale.propertyName || "",
+          blockName: sale.blockId ? blocksById[sale.blockId]?.name || "" : "",
+          propertyName: sale.propertyId
+            ? propertiesById[sale.propertyId]?.name || sale.propertyName || ""
+            : sale.propertyName || "",
+          areaSqYd: sale.areaSqYd,
+          rate,
+          commission: sale.areaSqYd * rate,
+        };
+      })
       .sort((a, b) => new Date(b.date) - new Date(a.date));
   }, [
     commissionDetailId,
-    commissionDetailSummary,
     sales,
     projectsById,
     blocksById,
     propertiesById,
     isSalePaid,
+    peopleIndex,
+    normalizedConfigHistory,
   ]);
   const commissionDetailDownline = useMemo(() => {
     if (!commissionDetailId) return [];
@@ -3269,12 +3354,12 @@ function App() {
     if (!sale) return "";
     return sale.projectId
       ? projectsById[sale.projectId]?.name || ""
-      : sale.propertyName || "";
+      : sale.location || sale.propertyName || "";
   }
 
   function getSaleBlockName(sale) {
     if (!sale) return "";
-    return sale.blockId ? blocksById[sale.blockId]?.name || "" : "";
+    return sale.blockId ? blocksById[sale.blockId]?.name || sale.projectBlockName || "" : "";
   }
 
   const resolveSaleLocation = (projectId, fallback = "") => {
@@ -3349,6 +3434,7 @@ function App() {
       projectId: "",
       blockId: "",
       propertyId: "",
+      address: "",
     });
     setPersonNameError("");
   };
@@ -3362,6 +3448,7 @@ function App() {
       investmentActualArea: "",
       investmentId: "",
       returnPercent: "",
+      address: "",
     });
     setEditingPersonId(null);
     setEditPersonNameError("");
@@ -3387,6 +3474,7 @@ function App() {
       buybackReturnPercent: "",
       payments: [{ amount: "", date: getTodayLocal() }],
       existingPayments: [],
+      properties: [makeBlankProperty()],
     });
     setEditingSaleId(null);
     setIsSaleEditMode(true);
@@ -3576,6 +3664,7 @@ function App() {
         phone: personForm.phone || null,
         join_date: personForm.joinDate,
         is_special: personForm.isSpecial ? 1 : 0,
+        address: personForm.address || null,
       });
 
       if (!personForm.isSpecial) {
@@ -3654,6 +3743,7 @@ function App() {
         name: trimmedName,
         phone: editPersonForm.phone || null,
         join_date: editPersonForm.joinDate,
+        address: editPersonForm.address || null,
       });
       if (editPersonForm.investmentId) {
         await updateInvestment(editPersonForm.investmentId, {
@@ -3686,18 +3776,6 @@ function App() {
       return;
     }
     if (
-      !saleForm.sellerId ||
-      !saleForm.projectId ||
-      !saleForm.blockId ||
-      !saleForm.propertyId ||
-      !saleForm.areaSqYd ||
-      !saleForm.totalAmount ||
-      !saleForm.saleDate
-    ) {
-      setFormError("All sale fields are required.");
-      return;
-    }
-    if (
       !saleForm.customerName ||
       !saleForm.customerPhone ||
       !saleForm.customerAddress
@@ -3723,33 +3801,32 @@ function App() {
       );
       return;
     }
-    if (saleForm.buybackEnabled) {
-      if (!saleForm.buybackMonths || !saleForm.buybackReturnPercent) {
-        setFormError("Buyback period and return percentage are required.");
+
+    if (editingSaleId) {
+      // Edit existing sale (flat form fields)
+      if (
+        !saleForm.sellerId ||
+        !saleForm.projectId ||
+        !saleForm.blockId ||
+        !saleForm.propertyId ||
+        !saleForm.areaSqYd ||
+        !saleForm.totalAmount ||
+        !saleForm.saleDate
+      ) {
+        setFormError("All sale fields are required.");
         return;
       }
-    }
-    try {
-      const locationValue = resolveSaleLocation(
-        saleForm.projectId,
-        editingSaleId ? salesById[editingSaleId]?.location || "" : ""
-      );
-      const paymentPayloads = saleForm.payments.filter(
-        (payment) => payment.amount && payment.date
-      );
-      if (paymentPayloads.length) {
-        const minFirstPayment = Math.ceil(
-          Number(saleForm.totalAmount) * 0.1
-        );
-        if (Number(paymentPayloads[0].amount) < minFirstPayment) {
-          setFormError(
-            `First payment must be at least ${formatCurrency(minFirstPayment)}.`
-          );
+      if (saleForm.buybackEnabled) {
+        if (!saleForm.buybackMonths || !saleForm.buybackReturnPercent) {
+          setFormError("Buyback period and return percentage are required.");
           return;
         }
       }
-      let saleId = editingSaleId;
-      if (editingSaleId) {
+      try {
+        const locationValue = resolveSaleLocation(
+          saleForm.projectId,
+          salesById[editingSaleId]?.location || ""
+        );
         await updateSale(editingSaleId, {
           seller_id: saleForm.sellerId,
           project_id: saleForm.projectId,
@@ -3773,54 +3850,111 @@ function App() {
             ? Number(saleForm.buybackReturnPercent)
             : null,
         });
-      } else {
+        await loadData();
+        setShowSaleModal(false);
+        resetSaleForm();
+        addNotification("Sale updated successfully.");
+      } catch (err) {
+        console.error(err);
+        setFormError("Failed to save the sale.");
+      }
+      return;
+    }
+
+    // New sale: use the properties array
+    if (!saleForm.sellerId) {
+      setFormError("Please select a seller.");
+      return;
+    }
+    const propsToCreate = (saleForm.properties || []).filter(Boolean);
+    for (let i = 0; i < propsToCreate.length; i++) {
+      const prop = propsToCreate[i];
+      const label = propsToCreate.length > 1 ? ` (Property ${i + 1})` : "";
+      if (!prop.projectId || !prop.blockId || !prop.propertyId) {
+        setFormError(`Project, block, and property are required${label}.`);
+        return;
+      }
+      if (!prop.areaSqYd || !prop.totalAmount || !prop.saleDate) {
+        setFormError(`Area, total amount, and sale date are required${label}.`);
+        return;
+      }
+      if (prop.buybackEnabled) {
+        if (!prop.buybackMonths || !prop.buybackReturnPercent) {
+          setFormError(
+            `Buyback period and return percentage are required${label}.`
+          );
+          return;
+        }
+      }
+      const validPayments = (prop.payments || []).filter(
+        (p) => p.amount && p.date
+      );
+      if (validPayments.length > 0) {
+        const minFirst = Math.ceil(Number(prop.totalAmount) * 0.1);
+        if (Number(validPayments[0].amount) < minFirst) {
+          setFormError(
+            `First payment must be at least ${formatCurrency(minFirst)}${label}.`
+          );
+          return;
+        }
+        const total = validPayments.reduce(
+          (acc, p) => acc + Number(p.amount),
+          0
+        );
+        if (total > Number(prop.totalAmount)) {
+          setFormError(
+            `Total payments cannot exceed the property amount${label}.`
+          );
+          return;
+        }
+      }
+    }
+    try {
+      for (const prop of propsToCreate) {
+        const locationValue = resolveSaleLocation(prop.projectId, "");
         const response = await createSale({
           seller_id: saleForm.sellerId,
-          project_id: saleForm.projectId,
-          block_id: saleForm.blockId,
-          property_id: saleForm.propertyId,
+          project_id: prop.projectId,
+          block_id: prop.blockId,
+          property_id: prop.propertyId,
           location: locationValue,
-          area_sq_yd: Number(saleForm.areaSqYd),
-          actual_area_sq_yd: saleForm.actualAreaSqYd
-            ? Number(saleForm.actualAreaSqYd)
+          area_sq_yd: Number(prop.areaSqYd),
+          actual_area_sq_yd: prop.actualAreaSqYd
+            ? Number(prop.actualAreaSqYd)
             : null,
-          total_amount: Number(saleForm.totalAmount),
-          sale_date: saleForm.saleDate,
+          total_amount: Number(prop.totalAmount),
+          sale_date: prop.saleDate,
           customer_name: saleForm.customerName,
           customer_phone: saleForm.customerPhone,
           customer_address: saleForm.customerAddress,
-          buyback_enabled: saleForm.buybackEnabled ? 1 : 0,
-          buyback_months: saleForm.buybackEnabled
-            ? Number(saleForm.buybackMonths)
+          buyback_enabled: prop.buybackEnabled ? 1 : 0,
+          buyback_months: prop.buybackEnabled
+            ? Number(prop.buybackMonths)
             : null,
-          buyback_return_percent: saleForm.buybackEnabled
-            ? Number(saleForm.buybackReturnPercent)
+          buyback_return_percent: prop.buybackEnabled
+            ? Number(prop.buybackReturnPercent)
             : null,
         });
-        saleId = response.id;
+        const saleId = response.id;
+        const validPayments = (prop.payments || []).filter(
+          (p) => p.amount && p.date
+        );
+        for (const payment of validPayments) {
+          await createPayment({
+            sale_id: saleId,
+            amount: Number(payment.amount),
+            date: payment.date,
+          });
+        }
       }
-
-      const scheduledTotal = paymentPayloads.reduce(
-        (acc, payment) => acc + Number(payment.amount),
-        0
-      );
-      if (scheduledTotal > Number(saleForm.totalAmount)) {
-        setFormError("Total payments cannot exceed the property amount.");
-        return;
-      }
-
-      for (const payment of paymentPayloads) {
-        await createPayment({
-          sale_id: saleId,
-          amount: Number(payment.amount),
-          date: payment.date,
-        });
-      }
-
       await loadData();
       setShowSaleModal(false);
       resetSaleForm();
-      addNotification(editingSaleId ? "Sale updated successfully." : "Sale added successfully.");
+      addNotification(
+        propsToCreate.length > 1
+          ? `${propsToCreate.length} sales added successfully.`
+          : "Sale added successfully."
+      );
     } catch (err) {
       console.error(err);
       setFormError("Failed to save the sale.");
@@ -5168,6 +5302,7 @@ function App() {
                                   investmentId: joinInvestment?.id || "",
                                   returnPercent:
                                     joinInvestment?.returnPercent || 200,
+                                  address: fullPerson.address || "",
                                 };
                                 setEditingPersonId(fullPerson.id);
                                 setEditPersonForm(nextForm);
@@ -6887,8 +7022,8 @@ function App() {
                               project: getSaleProjectName(sale),
                               block: getSaleBlockName(sale),
                               property: sale.propertyId
-                                ? propertiesById[sale.propertyId]?.name || "-"
-                                : "-",
+                                ? propertiesById[sale.propertyId]?.name || sale.projectPropertyName || "-"
+                                : sale.propertyName || "-",
                               area_sq_yd: sale.areaSqYd,
                               actual_area_sq_yd: sale.actualAreaSqYd || "",
                               amount: formatCurrency(sale.totalAmount),
@@ -6966,9 +7101,7 @@ function App() {
                 <div className="profile-card">
                   <p className="muted">Total Commission Area Sold</p>
                   <h3>
-                    {selectedPersonSales
-                      .reduce((acc, sale) => acc + sale.areaSqYd, 0)
-                      .toLocaleString()} sq yd
+                    {(salesIndex[selectedPerson.id]?.totalArea || 0).toLocaleString()} sq yd
                   </h3>
                   <p className="muted">
                     Last sale: {salesIndex[selectedPerson.id]?.lastSale}
@@ -6986,7 +7119,7 @@ function App() {
                             <th>Project</th>
                             <th>Block</th>
                             <th>Property</th>
-                            <th>Commission Area</th>
+                            <th>Area (sq yd)</th>
                             <th>Actual Area</th>
                             <th>Amount</th>
                           </tr>
@@ -7011,7 +7144,7 @@ function App() {
                               </td>
                               <td>
                                 {sale.blockId
-                                  ? blocksById[sale.blockId]?.name || "-"
+                                  ? blocksById[sale.blockId]?.name || sale.projectBlockName || "-"
                                   : "-"}
                               </td>
                               <td>
@@ -7023,12 +7156,12 @@ function App() {
                                       openPropertyDetail(sale.propertyId)
                                     }
                                   >
-                                    {propertiesById[sale.propertyId]?.name || "-"}
+                                    {propertiesById[sale.propertyId]?.name || sale.projectPropertyName || "-"}
                                   </button>
-                              ) : (
-                                "-"
-                              )}
-                            </td>
+                                ) : (
+                                  sale.propertyName || "-"
+                                )}
+                              </td>
                             <td>{sale.areaSqYd} sq yd</td>
                             <td>
                               {sale.actualAreaSqYd
@@ -7079,7 +7212,7 @@ function App() {
                           </td>
                           <td>
                             {inv.blockId
-                              ? blocksById[inv.blockId]?.name || "-"
+                              ? blocksById[inv.blockId]?.name || inv.projectBlockName || "-"
                               : "-"}
                           </td>
                           <td>
@@ -7091,7 +7224,7 @@ function App() {
                                   openPropertyDetail(inv.propertyId)
                                 }
                               >
-                                {propertiesById[inv.propertyId]?.name || "-"}
+                                {propertiesById[inv.propertyId]?.name || inv.projectPropertyName || "-"}
                               </button>
                             ) : (
                               "-"
@@ -7900,6 +8033,19 @@ function App() {
                 </div>
               </label>
               <label>
+                Address
+                <input
+                  value={personForm.address}
+                  onChange={(e) =>
+                    setPersonForm((prev) => ({
+                      ...prev,
+                      address: e.target.value,
+                    }))
+                  }
+                  placeholder="Optional"
+                />
+              </label>
+              <label>
                 Referred By
                 <SearchableSelect
                   key={showPersonModal ? "open" : "closed"}
@@ -8304,6 +8450,20 @@ function App() {
                 </div>
               </label>
               <label>
+                Address
+                <input
+                  value={editPersonForm.address}
+                  disabled={!isPersonEditMode}
+                  onChange={(e) =>
+                    setEditPersonForm((prev) => ({
+                      ...prev,
+                      address: e.target.value,
+                    }))
+                  }
+                  placeholder="Optional"
+                />
+              </label>
+              <label>
                 Join Date
                 <input
                   type="datetime-local"
@@ -8481,174 +8641,20 @@ function App() {
                     }))
                   }
                   options={[
-                    ...peopleLookup.map((person) => ({
-                      value: person.id,
-                      label: formatName(person.name),
-                    })),
+                    ...peopleLookup
+                      .filter((person) => person.status === "active" || person.id === saleForm.sellerId)
+                      .map((person) => ({
+                        value: person.id,
+                        label: formatName(person.name),
+                      })),
                   ]}
                   placeholder="Search seller..."
                   disabled={saleReadOnly}
                 />
               </label>
-              <label>
-                Project
-                <SearchableSelect
-                  key={`${showSaleModal ? "open" : "closed"}-project`}
-                  value={saleForm.projectId}
-                  onChange={(value) =>
-                    setSaleForm((prev) => ({
-                      ...prev,
-                      projectId: value,
-                      blockId: "",
-                      propertyId: "",
-                    }))
-                  }
-                  options={[
-                    ...projects.map((project) => ({
-                      value: project.id,
-                      label: project.name,
-                    })),
-                  ]}
-                  placeholder="Search project..."
-                  disabled={saleReadOnly}
-                />
-              </label>
-              <label>
-                Block
-                <SearchableSelect
-                  key={`${showSaleModal ? "open" : "closed"}-block-${saleForm.projectId}`}
-                  value={saleForm.blockId}
-                  onChange={(value) =>
-                    setSaleForm((prev) => ({
-                      ...prev,
-                      blockId: value,
-                      propertyId: "",
-                    }))
-                  }
-                  options={blocksForProject(saleForm.projectId).map((block) => ({
-                    value: block.id,
-                    label: block.name,
-                  }))}
-                  placeholder={
-                    saleForm.projectId ? "Search block..." : "Select project first"
-                  }
-                  disabled={saleReadOnly || !saleForm.projectId}
-                />
-              </label>
-              <label>
-                Property
-                <SearchableSelect
-                  key={`${showSaleModal ? "open" : "closed"}-property-${saleForm.blockId}`}
-                  value={saleForm.propertyId}
-                  onChange={(value) =>
-                    setSaleForm((prev) => ({
-                      ...prev,
-                      propertyId: value,
-                    }))
-                  }
-                  options={propertiesForBlock(
-                    saleForm.blockId,
-                    editingSaleId ? saleForm.propertyId : null
-                  ).map((prop) => ({
-                    value: prop.id,
-                    label: prop.name,
-                  }))}
-                  placeholder={
-                    saleForm.blockId
-                      ? "Search property..."
-                      : "Select block first"
-                  }
-                  disabled={saleReadOnly || !saleForm.blockId}
-                />
-              </label>
-              <div className="modal-row">
-                <label>
-                  Actual Area (sq yd)
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={saleForm.actualAreaSqYd}
-                    disabled={saleReadOnly}
-                    onChange={(e) =>
-                      setSaleForm((prev) => ({
-                        ...prev,
-                        actualAreaSqYd: e.target.value,
-                      }))
-                    }
-                    placeholder="Optional"
-                  />
-                </label>
-                <label>
-                  Commission Area (sq yd)
-                  <input
-                    type="number"
-                    value={saleForm.areaSqYd}
-                    disabled={saleReadOnly}
-                    onChange={(e) =>
-                      setSaleForm((prev) => ({
-                        ...prev,
-                        areaSqYd: e.target.value,
-                      }))
-                    }
-                    required
-                  />
-                </label>
-                <label>
-                  Total Amount
-                  <input
-                    type="number"
-                    value={saleForm.totalAmount}
-                    disabled={saleReadOnly}
-                    onChange={(e) =>
-                      setSaleForm((prev) => ({
-                        ...prev,
-                        totalAmount: e.target.value,
-                      }))
-                    }
-                    required
-                  />
-                </label>
-              </div>
-              <label>
-                Sale Date
-                <input
-                  type="datetime-local"
-                  value={saleForm.saleDate}
-                  disabled={saleReadOnly}
-                  onChange={(e) =>
-                    setSaleForm((prev) => ({
-                      ...prev,
-                      saleDate: e.target.value,
-                    }))
-                  }
-                  required
-                />
-              </label>
-              {saleForm.saleDate && (
-                <div className="helper-text">
-                  Auto-cancel after 15 working days:{" "}
-                  {(() => {
-                    const due = addWorkingDays(saleForm.saleDate, 15);
-                    return due ? formatDate(due.toISOString()) : "-";
-                  })()}
-                </div>
-              )}
 
+              {/* ── Customer Details (shared for all properties) ── */}
               <div className="modal-divider">Customer Details</div>
-              <label>
-                Customer Name
-                <input
-                  value={saleForm.customerName}
-                  disabled={saleReadOnly}
-                  onChange={(e) =>
-                    setSaleForm((prev) => ({
-                      ...prev,
-                      customerName: e.target.value,
-                    }))
-                  }
-                  required
-                />
-              </label>
               <label>
                 Customer Phone
                 <div className="phone-input">
@@ -8664,23 +8670,33 @@ function App() {
                         .slice(0, 10);
                       setSaleForm((prev) => {
                         const prevDigits = getLocalPhone(prev.customerPhone);
-                        const prevMatch = customers.find(
-                          (cust) => getLocalPhone(cust.phone) === prevDigits
-                        );
-                        const nextMatch = customers.find(
+                        const hadMatch =
+                          customers.find(
+                            (cust) => getLocalPhone(cust.phone) === prevDigits
+                          ) ||
+                          peopleLookup.find(
+                            (p) => getLocalPhone(p.phone) === prevDigits && p.status === "active"
+                          );
+                        const nextCustomerMatch = customers.find(
                           (cust) => getLocalPhone(cust.phone) === digits
                         );
+                        const nextPersonMatch = !nextCustomerMatch
+                          ? peopleLookup.find(
+                              (p) => getLocalPhone(p.phone) === digits && p.status === "active"
+                            )
+                          : null;
+                        const nextMatch = nextCustomerMatch || nextPersonMatch;
                         return {
                           ...prev,
                           customerPhone: `+91${digits}`,
                           customerName: nextMatch
                             ? nextMatch.name
-                            : prevMatch
+                            : hadMatch
                             ? ""
                             : prev.customerName,
                           customerAddress: nextMatch
                             ? nextMatch.address || ""
-                            : prevMatch
+                            : hadMatch
                             ? ""
                             : prev.customerAddress,
                         };
@@ -8692,14 +8708,28 @@ function App() {
                 </div>
               </label>
               <label>
+                Customer Name
+                <input
+                  value={saleForm.customerName}
+                  disabled={saleReadOnly || !!saleCustomerMatch}
+                  onChange={(e) =>
+                    setSaleForm((prev) => ({
+                      ...prev,
+                      customerName: e.target.value,
+                    }))
+                  }
+                  required
+                />
+              </label>
+              <label>
                 Customer Address
-                  <input
-                    value={saleForm.customerAddress}
-                    disabled={saleReadOnly}
-                    onChange={(e) =>
-                      setSaleForm((prev) => ({
-                        ...prev,
-                        customerAddress: e.target.value,
+                <input
+                  value={saleForm.customerAddress}
+                  disabled={saleReadOnly || !!saleCustomerMatch}
+                  onChange={(e) =>
+                    setSaleForm((prev) => ({
+                      ...prev,
+                      customerAddress: e.target.value,
                     }))
                   }
                   required
@@ -8707,168 +8737,611 @@ function App() {
               </label>
               {saleCustomerMatch && (
                 <div className="helper-text">
-                  Existing customer detected. Name and address have been
-                  auto-filled.
+                  {saleCustomerMatch.matchType === "person"
+                    ? "Team member detected. Name and address have been auto-filled and locked."
+                    : "Existing customer detected. Name and address have been auto-filled and locked."}
                 </div>
               )}
-              <div className="modal-divider">Buyback (optional)</div>
-              <div className="checkbox-grid">
-                <label className="checkbox-item">
-                  <input
-                    type="checkbox"
-                    checked={saleForm.buybackEnabled}
-                    disabled={saleReadOnly}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setSaleForm((prev) => ({
-                        ...prev,
-                        buybackEnabled: checked,
-                        buybackMonths: checked ? prev.buybackMonths : "",
-                        buybackReturnPercent: checked
-                          ? prev.buybackReturnPercent
-                          : "",
-                      }));
-                    }}
-                  />
-                  This sale includes buyback
-                </label>
-              </div>
-              {saleForm.buybackEnabled && (
+
+              {/* ── EDIT MODE: flat property fields ── */}
+              {editingSaleId && (
                 <>
+                  <div className="modal-divider">Property Details</div>
+                  <label>
+                    Project
+                    <SearchableSelect
+                      key={`${showSaleModal ? "open" : "closed"}-project`}
+                      value={saleForm.projectId}
+                      onChange={(value) =>
+                        setSaleForm((prev) => ({
+                          ...prev,
+                          projectId: value,
+                          blockId: "",
+                          propertyId: "",
+                        }))
+                      }
+                      options={[
+                        ...projects.map((project) => ({
+                          value: project.id,
+                          label: project.name,
+                        })),
+                      ]}
+                      placeholder="Search project..."
+                      disabled={saleReadOnly}
+                    />
+                  </label>
+                  <label>
+                    Block
+                    <SearchableSelect
+                      key={`${showSaleModal ? "open" : "closed"}-block-${saleForm.projectId}`}
+                      value={saleForm.blockId}
+                      onChange={(value) =>
+                        setSaleForm((prev) => ({
+                          ...prev,
+                          blockId: value,
+                          propertyId: "",
+                        }))
+                      }
+                      options={blocksForProject(saleForm.projectId).map((block) => ({
+                        value: block.id,
+                        label: block.name,
+                      }))}
+                      placeholder={
+                        saleForm.projectId ? "Search block..." : "Select project first"
+                      }
+                      disabled={saleReadOnly || !saleForm.projectId}
+                    />
+                  </label>
+                  <label>
+                    Property
+                    <SearchableSelect
+                      key={`${showSaleModal ? "open" : "closed"}-property-${saleForm.blockId}`}
+                      value={saleForm.propertyId}
+                      onChange={(value) =>
+                        setSaleForm((prev) => ({
+                          ...prev,
+                          propertyId: value,
+                        }))
+                      }
+                      options={propertiesForBlock(
+                        saleForm.blockId,
+                        editingSaleId ? saleForm.propertyId : null
+                      ).map((prop) => ({
+                        value: prop.id,
+                        label: prop.name,
+                      }))}
+                      placeholder={
+                        saleForm.blockId
+                          ? "Search property..."
+                          : "Select block first"
+                      }
+                      disabled={saleReadOnly || !saleForm.blockId}
+                    />
+                  </label>
                   <div className="modal-row">
                     <label>
-                      Buyback Period (months)
-                      <select
-                        className="select"
-                        value={saleForm.buybackMonths}
+                      Actual Area (sq yd)
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={saleForm.actualAreaSqYd}
                         disabled={saleReadOnly}
                         onChange={(e) =>
                           setSaleForm((prev) => ({
                             ...prev,
-                            buybackMonths: e.target.value,
+                            actualAreaSqYd: e.target.value,
+                          }))
+                        }
+                        placeholder="Optional"
+                      />
+                    </label>
+                    <label>
+                      Commission Area (sq yd)
+                      <input
+                        type="number"
+                        value={saleForm.areaSqYd}
+                        disabled={saleReadOnly}
+                        onChange={(e) =>
+                          setSaleForm((prev) => ({
+                            ...prev,
+                            areaSqYd: e.target.value,
                           }))
                         }
                         required
-                      >
-                        <option value="">Select period</option>
-                        {Array.from({ length: 46 }, (_, idx) => idx + 3).map(
-                          (month) => (
-                            <option key={`bb-sale-${month}`} value={month}>
-                              {month} months
-                            </option>
-                          )
-                        )}
-                      </select>
+                      />
                     </label>
                     <label>
-                      Return Percentage
+                      Total Amount
                       <input
                         type="number"
-                        min="100"
-                        value={saleForm.buybackReturnPercent}
+                        value={saleForm.totalAmount}
                         disabled={saleReadOnly}
                         onChange={(e) =>
                           setSaleForm((prev) => ({
                             ...prev,
-                            buybackReturnPercent: e.target.value,
+                            totalAmount: e.target.value,
                           }))
                         }
                         required
                       />
                     </label>
                   </div>
-                  <div className="helper-text">
-                    Buyback becomes active only after full payment is received.
+                  <label>
+                    Sale Date
+                    <input
+                      type="datetime-local"
+                      value={saleForm.saleDate}
+                      disabled={saleReadOnly}
+                      onChange={(e) =>
+                        setSaleForm((prev) => ({
+                          ...prev,
+                          saleDate: e.target.value,
+                        }))
+                      }
+                      required
+                    />
+                  </label>
+                  {saleForm.saleDate && (
+                    <div className="helper-text">
+                      Auto-cancel after 15 working days:{" "}
+                      {(() => {
+                        const due = addWorkingDays(saleForm.saleDate, 15);
+                        return due ? formatDate(due.toISOString()) : "-";
+                      })()}
+                    </div>
+                  )}
+                  <div className="modal-divider">Buyback (optional)</div>
+                  <div className="checkbox-grid">
+                    <label className="checkbox-item">
+                      <input
+                        type="checkbox"
+                        checked={saleForm.buybackEnabled}
+                        disabled={saleReadOnly}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setSaleForm((prev) => ({
+                            ...prev,
+                            buybackEnabled: checked,
+                            buybackMonths: checked ? prev.buybackMonths : "",
+                            buybackReturnPercent: checked
+                              ? prev.buybackReturnPercent
+                              : "",
+                          }));
+                        }}
+                      />
+                      This sale includes buyback
+                    </label>
                   </div>
-                </>
-              )}
-
-              {editingSaleId && saleForm.existingPayments.length > 0 && (
-                <>
-                  <div className="modal-divider">Existing Payments</div>
-                  <table className="data-table compact">
-                    <thead>
-                      <tr>
-                        <th>Amount</th>
-                        <th>Date</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {saleForm.existingPayments.map((payment, index) => (
-                        <tr key={`existing-${index}`}>
-                          <td>{formatCurrency(payment.amount)}</td>
-                          <td>{formatDate(payment.date)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </>
-              )}
-
-              {!editingSaleId && (
-                <>
-                  <div className="modal-divider">Payment Schedule</div>
-                  {saleForm.payments.map((payment, index) => (
-                    <div key={`payment-${index}`}>
+                  {saleForm.buybackEnabled && (
+                    <>
                       <div className="modal-row">
                         <label>
-                          Amount
-                          <input
-                            type="number"
-                            value={payment.amount}
-                            onChange={(e) => {
-                              const nextPayments = [...saleForm.payments];
-                              nextPayments[index].amount = e.target.value;
+                          Buyback Period (months)
+                          <select
+                            className="select"
+                            value={saleForm.buybackMonths}
+                            disabled={saleReadOnly}
+                            onChange={(e) =>
                               setSaleForm((prev) => ({
                                 ...prev,
-                                payments: nextPayments,
-                              }));
-                            }}
-                          />
+                                buybackMonths: e.target.value,
+                              }))
+                            }
+                            required
+                          >
+                            <option value="">Select period</option>
+                            {Array.from({ length: 46 }, (_, idx) => idx + 3).map(
+                              (month) => (
+                                <option key={`bb-sale-${month}`} value={month}>
+                                  {month} months
+                                </option>
+                              )
+                            )}
+                          </select>
                         </label>
                         <label>
-                          Date
+                          Return Percentage
                           <input
-                            type="date"
-                            value={payment.date}
-                            onChange={(e) => {
-                              const nextPayments = [...saleForm.payments];
-                              nextPayments[index].date = e.target.value;
+                            type="number"
+                            min="100"
+                            value={saleForm.buybackReturnPercent}
+                            disabled={saleReadOnly}
+                            onChange={(e) =>
                               setSaleForm((prev) => ({
                                 ...prev,
-                                payments: nextPayments,
-                              }));
-                            }}
+                                buybackReturnPercent: e.target.value,
+                              }))
+                            }
+                            required
                           />
                         </label>
                       </div>
-                      {index === 0 && saleForm.totalAmount && (
-                        <div className="helper-text">
-                          Minimum first payment:{" "}
-                          {formatCurrency(
-                            Math.ceil(Number(saleForm.totalAmount || 0) * 0.1)
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  <button
-                    className="ghost-button"
-                    type="button"
-                    onClick={() =>
-                      setSaleForm((prev) => ({
-                        ...prev,
-                        payments: [
-                          ...prev.payments,
-                          { amount: "", date: getTodayLocal() },
-                        ],
-                      }))
-                    }
-                  >
-                    Add Another Payment
-                  </button>
+                      <div className="helper-text">
+                        Buyback becomes active only after full payment is received.
+                      </div>
+                    </>
+                  )}
+                  {saleForm.existingPayments.length > 0 && (
+                    <>
+                      <div className="modal-divider">Existing Payments</div>
+                      <table className="data-table compact">
+                        <thead>
+                          <tr>
+                            <th>Amount</th>
+                            <th>Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {saleForm.existingPayments.map((payment, index) => (
+                            <tr key={`existing-${index}`}>
+                              <td>{formatCurrency(payment.amount)}</td>
+                              <td>{formatDate(payment.date)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
                 </>
               )}
+
+              {/* ── NEW SALE: multi-property panels ── */}
+              {!editingSaleId && (
+                <>
+                  {(saleForm.properties || []).filter(Boolean).map((prop, propIdx) => (
+                    <div key={prop._key || propIdx} className="sale-property-panel">
+                      <div className="modal-divider" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span>Property {propIdx + 1}</span>
+                        {(saleForm.properties || []).filter(Boolean).length > 1 && (
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            style={{ fontSize: "0.75rem", padding: "2px 8px" }}
+                            onClick={() =>
+                              setSaleForm((prev) => ({
+                                ...prev,
+                                properties: (prev.properties || []).filter(
+                                  (_, i) => i !== propIdx
+                                ),
+                              }))
+                            }
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                      <label>
+                        Project
+                        <SearchableSelect
+                          key={`new-project-${prop._key || propIdx}`}
+                          value={prop.projectId}
+                          onChange={(value) => {
+                            setSaleForm((prev) => {
+                              const next = [...(prev.properties || [])];
+                              next[propIdx] = {
+                                ...next[propIdx],
+                                projectId: value,
+                                blockId: "",
+                                propertyId: "",
+                              };
+                              if (value) ensureBlockProperties(null, "available");
+                              return { ...prev, properties: next };
+                            });
+                          }}
+                          options={projects.map((project) => ({
+                            value: project.id,
+                            label: project.name,
+                          }))}
+                          placeholder="Search project..."
+                        />
+                      </label>
+                      <label>
+                        Block
+                        <SearchableSelect
+                          key={`new-block-${prop._key || propIdx}-${prop.projectId}`}
+                          value={prop.blockId}
+                          onChange={(value) => {
+                            if (value) ensureBlockProperties(value, "available");
+                            setSaleForm((prev) => {
+                              const next = [...(prev.properties || [])];
+                              next[propIdx] = {
+                                ...next[propIdx],
+                                blockId: value,
+                                propertyId: "",
+                              };
+                              return { ...prev, properties: next };
+                            });
+                          }}
+                          options={blocksForProject(prop.projectId).map((block) => ({
+                            value: block.id,
+                            label: block.name,
+                          }))}
+                          placeholder={
+                            prop.projectId ? "Search block..." : "Select project first"
+                          }
+                          disabled={!prop.projectId}
+                        />
+                      </label>
+                      <label>
+                        Property
+                        <SearchableSelect
+                          key={`new-property-${prop._key || propIdx}-${prop.blockId}`}
+                          value={prop.propertyId}
+                          onChange={(value) =>
+                            setSaleForm((prev) => {
+                              const next = [...(prev.properties || [])];
+                              next[propIdx] = { ...next[propIdx], propertyId: value };
+                              return { ...prev, properties: next };
+                            })
+                          }
+                          options={propertiesForBlock(prop.blockId, null).map((p) => ({
+                            value: p.id,
+                            label: p.name,
+                            disabled: (saleForm.properties || [])
+                              .filter((_, idx) => idx !== propIdx)
+                              .some((otherProp) => otherProp.propertyId === p.id),
+                          }))}
+                          placeholder={
+                            prop.blockId ? "Search property..." : "Select block first"
+                          }
+                          disabled={!prop.blockId}
+                        />
+                      </label>
+                      <div className="modal-row">
+                        <label>
+                          Actual Area (sq yd)
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={prop.actualAreaSqYd}
+                            onChange={(e) =>
+                              setSaleForm((prev) => {
+                                const next = [...(prev.properties || [])];
+                                next[propIdx] = {
+                                  ...next[propIdx],
+                                  actualAreaSqYd: e.target.value,
+                                };
+                                return { ...prev, properties: next };
+                              })
+                            }
+                            placeholder="Optional"
+                          />
+                        </label>
+                        <label>
+                          Commission Area (sq yd)
+                          <input
+                            type="number"
+                            value={prop.areaSqYd}
+                            onChange={(e) =>
+                              setSaleForm((prev) => {
+                                const next = [...(prev.properties || [])];
+                                next[propIdx] = {
+                                  ...next[propIdx],
+                                  areaSqYd: e.target.value,
+                                };
+                                return { ...prev, properties: next };
+                              })
+                            }
+                            required
+                          />
+                        </label>
+                        <label>
+                          Total Amount
+                          <input
+                            type="number"
+                            value={prop.totalAmount}
+                            onChange={(e) =>
+                              setSaleForm((prev) => {
+                                const next = [...(prev.properties || [])];
+                                next[propIdx] = {
+                                  ...next[propIdx],
+                                  totalAmount: e.target.value,
+                                };
+                                return { ...prev, properties: next };
+                              })
+                            }
+                            required
+                          />
+                        </label>
+                      </div>
+                      <label>
+                        Sale Date
+                        <input
+                          type="datetime-local"
+                          value={prop.saleDate}
+                          onChange={(e) =>
+                            setSaleForm((prev) => {
+                              const next = [...(prev.properties || [])];
+                              next[propIdx] = {
+                                ...next[propIdx],
+                                saleDate: e.target.value,
+                              };
+                              return { ...prev, properties: next };
+                            })
+                          }
+                          required
+                        />
+                      </label>
+                      {prop.saleDate && (
+                        <div className="helper-text">
+                          Auto-cancel after 15 working days:{" "}
+                          {(() => {
+                            const due = addWorkingDays(prop.saleDate, 15);
+                            return due ? formatDate(due.toISOString()) : "-";
+                          })()}
+                        </div>
+                      )}
+                      <div className="modal-divider">Buyback (optional)</div>
+                      <div className="checkbox-grid">
+                        <label className="checkbox-item">
+                          <input
+                            type="checkbox"
+                            checked={prop.buybackEnabled}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setSaleForm((prev) => {
+                                const next = [...(prev.properties || [])];
+                                next[propIdx] = {
+                                  ...next[propIdx],
+                                  buybackEnabled: checked,
+                                  buybackMonths: checked ? next[propIdx].buybackMonths : "",
+                                  buybackReturnPercent: checked
+                                    ? next[propIdx].buybackReturnPercent
+                                    : "",
+                                };
+                                return { ...prev, properties: next };
+                              });
+                            }}
+                          />
+                          This sale includes buyback
+                        </label>
+                      </div>
+                      {prop.buybackEnabled && (
+                        <>
+                          <div className="modal-row">
+                            <label>
+                              Buyback Period (months)
+                              <select
+                                className="select"
+                                value={prop.buybackMonths}
+                                onChange={(e) =>
+                                  setSaleForm((prev) => {
+                                    const next = [...(prev.properties || [])];
+                                    next[propIdx] = {
+                                      ...next[propIdx],
+                                      buybackMonths: e.target.value,
+                                    };
+                                    return { ...prev, properties: next };
+                                  })
+                                }
+                                required
+                              >
+                                <option value="">Select period</option>
+                                {Array.from({ length: 46 }, (_, idx) => idx + 3).map(
+                                  (month) => (
+                                    <option
+                                      key={`bb-new-${propIdx}-${month}`}
+                                      value={month}
+                                    >
+                                      {month} months
+                                    </option>
+                                  )
+                                )}
+                              </select>
+                            </label>
+                            <label>
+                              Return Percentage
+                              <input
+                                type="number"
+                                min="100"
+                                value={prop.buybackReturnPercent}
+                                onChange={(e) =>
+                                  setSaleForm((prev) => {
+                                    const next = [...(prev.properties || [])];
+                                    next[propIdx] = {
+                                      ...next[propIdx],
+                                      buybackReturnPercent: e.target.value,
+                                    };
+                                    return { ...prev, properties: next };
+                                  })
+                                }
+                                required
+                              />
+                            </label>
+                          </div>
+                          <div className="helper-text">
+                            Buyback becomes active only after full payment is received.
+                          </div>
+                        </>
+                      )}
+                      <div className="modal-divider">Payment Schedule</div>
+                      {(prop.payments || []).map((payment, payIdx) => (
+                        <div key={`pay-${propIdx}-${payIdx}`}>
+                          <div className="modal-row">
+                            <label>
+                              Amount
+                              <input
+                                type="number"
+                                value={payment.amount}
+                                onChange={(e) =>
+                                  setSaleForm((prev) => {
+                                    const next = [...(prev.properties || [])];
+                                    const pays = [...(next[propIdx].payments || [])];
+                                    pays[payIdx] = { ...pays[payIdx], amount: e.target.value };
+                                    next[propIdx] = { ...next[propIdx], payments: pays };
+                                    return { ...prev, properties: next };
+                                  })
+                                }
+                              />
+                            </label>
+                            <label>
+                              Date
+                              <input
+                                type="date"
+                                value={payment.date}
+                                onChange={(e) =>
+                                  setSaleForm((prev) => {
+                                    const next = [...(prev.properties || [])];
+                                    const pays = [...(next[propIdx].payments || [])];
+                                    pays[payIdx] = { ...pays[payIdx], date: e.target.value };
+                                    next[propIdx] = { ...next[propIdx], payments: pays };
+                                    return { ...prev, properties: next };
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                          {payIdx === 0 && prop.totalAmount && (
+                            <div className="helper-text">
+                              Minimum first payment:{" "}
+                              {formatCurrency(
+                                Math.ceil(Number(prop.totalAmount || 0) * 0.1)
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() =>
+                          setSaleForm((prev) => {
+                            const next = [...(prev.properties || [])];
+                            next[propIdx] = {
+                              ...next[propIdx],
+                              payments: [
+                                ...(next[propIdx].payments || []),
+                                { amount: "", date: getTodayLocal() },
+                              ],
+                            };
+                            return { ...prev, properties: next };
+                          })
+                        }
+                      >
+                        Add Another Payment
+                      </button>
+                    </div>
+                  ))}
+                  {(saleForm.properties || []).filter(Boolean).length < 10 && (
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={() =>
+                        setSaleForm((prev) => ({
+                          ...prev,
+                          properties: [
+                            ...(prev.properties || []),
+                            makeBlankProperty(),
+                          ],
+                        }))
+                      }
+                    >
+                      + Add Another Property
+                    </button>
+                  )}
+                </>
+              )}
+
               {formError && <p className="form-error">{formError}</p>}
               {editingSaleId ? (
                 isSaleEditMode && (
@@ -8918,8 +9391,9 @@ function App() {
                 Property:{" "}
                 {paymentSaleDetail?.sale?.property_id
                   ? propertiesById[paymentSaleDetail.sale.property_id]?.name ||
+                    paymentSaleDetail.sale.project_property_name ||
                     "-"
-                  : "-"}
+                  : paymentSaleDetail?.sale?.property_name || "-"}
                 {" • "}
                 Seller:{" "}
                 {paymentSaleDetail?.sale?.seller_id
@@ -9075,13 +9549,17 @@ function App() {
                     {" • "}Block:{" "}
                     {investmentPaymentDetail.investment.blockId
                       ? blocksById[investmentPaymentDetail.investment.blockId]
-                          ?.name || "-"
+                          ?.name ||
+                        investmentPaymentDetail.investment.projectBlockName ||
+                        "-"
                       : "-"}
                     {" • "}Property:{" "}
                     {investmentPaymentDetail.investment.propertyId
                       ? propertiesById[
                           investmentPaymentDetail.investment.propertyId
-                        ]?.name || "-"
+                        ]?.name ||
+                        investmentPaymentDetail.investment.projectPropertyName ||
+                        "-"
                       : "-"}
                   </div>
                   <div className="helper-text">
@@ -10197,32 +10675,117 @@ function App() {
           <div className="modal-card modal-wide">
             <div className="modal-header">
               <h3>Customer Details</h3>
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => {
-                  setShowCustomerDetailModal(false);
-                  setSelectedCustomerDetail(null);
-                  setSelectedCustomerSales([]);
-                }}
-              >
-                Close
-              </button>
+              <div className="table-actions">
+                {!isCustomerEditMode && hasPermission("sales:write") && (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      setCustomerEditForm({
+                        name: selectedCustomerDetail.name,
+                        phone: getLocalPhone(selectedCustomerDetail.phone),
+                        address: selectedCustomerDetail.address || "",
+                      });
+                      setCustomerEditError("");
+                      setIsCustomerEditMode(true);
+                    }}
+                  >
+                    Edit
+                  </button>
+                )}
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => {
+                    setShowCustomerDetailModal(false);
+                    setSelectedCustomerDetail(null);
+                    setSelectedCustomerSales([]);
+                    setIsCustomerEditMode(false);
+                  }}
+                >
+                  Close
+                </button>
+              </div>
             </div>
-            <div className="project-details">
-              <div className="detail-row">
-                <span>Name</span>
-                <strong>{formatName(selectedCustomerDetail.name)}</strong>
+            {isCustomerEditMode ? (
+              <form className="modal-form" onSubmit={handleUpdateCustomer}>
+                <label>
+                  Customer Name
+                  <input
+                    value={customerEditForm.name}
+                    onChange={(e) =>
+                      setCustomerEditForm((prev) => ({
+                        ...prev,
+                        name: e.target.value,
+                      }))
+                    }
+                    required
+                  />
+                </label>
+                <label>
+                  Customer Phone
+                  <div className="phone-input">
+                    <span className="phone-prefix">+91</span>
+                    <input
+                      inputMode="numeric"
+                      maxLength={10}
+                      value={customerEditForm.phone}
+                      onChange={(e) =>
+                        setCustomerEditForm((prev) => ({
+                          ...prev,
+                          phone: e.target.value.replace(/\D/g, "").slice(0, 10),
+                        }))
+                      }
+                      placeholder="10-digit number"
+                      required
+                    />
+                  </div>
+                </label>
+                <label>
+                  Customer Address
+                  <input
+                    value={customerEditForm.address}
+                    onChange={(e) =>
+                      setCustomerEditForm((prev) => ({
+                        ...prev,
+                        address: e.target.value,
+                      }))
+                    }
+                    required
+                  />
+                </label>
+                {customerEditError && (
+                  <p className="form-error">{customerEditError}</p>
+                )}
+                <div className="modal-row" style={{ marginTop: "10px" }}>
+                  <button className="primary-button" type="submit">
+                    Save Changes
+                  </button>
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => setIsCustomerEditMode(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="project-details">
+                <div className="detail-row">
+                  <span>Name</span>
+                  <strong>{formatName(selectedCustomerDetail.name)}</strong>
+                </div>
+                <div className="detail-row">
+                  <span>Phone</span>
+                  <strong>{selectedCustomerDetail.phone}</strong>
+                </div>
+                <div className="detail-row">
+                  <span>Address</span>
+                  <strong>{selectedCustomerDetail.address || "-"}</strong>
+                </div>
               </div>
-              <div className="detail-row">
-                <span>Phone</span>
-                <strong>{selectedCustomerDetail.phone}</strong>
-              </div>
-              <div className="detail-row">
-                <span>Address</span>
-                <strong>{selectedCustomerDetail.address || "-"}</strong>
-              </div>
-            </div>
+            )}
             <div className="modal-divider">Purchase History</div>
             <div className="table-scroll">
               <table className="data-table compact">

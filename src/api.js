@@ -146,6 +146,15 @@ export const fetchCustomers = async (params = {}) => {
 export const fetchCustomerDetail = async (id) =>
   handleResponse(await apiFetch(`/customers/${id}`));
 
+export const updateCustomer = async (id, payload) =>
+  handleResponse(
+    await apiFetch(`/customers/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+  );
+
 export const fetchInvestmentPayments = async (params = {}) => {
   const query = buildQuery(params);
   const path = query ? `/investment-payments?${query}` : "/investment-payments";

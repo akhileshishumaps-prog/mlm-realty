@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS people (
   join_date TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',
   is_special INTEGER NOT NULL DEFAULT 0,
+  address TEXT,
   FOREIGN KEY (sponsor_id) REFERENCES people(id)
 );
 
